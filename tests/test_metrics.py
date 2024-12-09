@@ -10,7 +10,9 @@ metric_config = MetricConfig(
     infilled_bars=(52,56),
     context_size= 4,
     infilled_track_idx=0,
-    bar_pitch_variety=True
+    bar_absolute_pitches= True,
+    bar_pitch_variety=True,
+    bar_note_density=True
 )
 
 if __name__ == "__main__":

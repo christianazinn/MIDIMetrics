@@ -18,8 +18,9 @@ class MetricConfig:
     infilled_bars: Tuple[int, int] = None
     context_size: int = None
     bar_absolute_pitches: bool = False
-    bar_pitch_variety: bool = True
-    bar_absolute_durations: bool = False
+    bar_pitch_variety: bool = False
+    bar_note_density: bool = False
+    note_durations: bool = False
 
     def __post_init__(self):
         if self.generation_type is None:

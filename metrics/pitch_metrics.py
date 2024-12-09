@@ -1,7 +1,6 @@
 from lib2to3.fixes.fix_input import context
 
 import numpy as np
-from miditok.utils import get_bars_ticks
 from symusic import Score
 from typing_extensions import override
 
@@ -12,15 +11,38 @@ import matplotlib.pyplot as plt
 from itertools import chain
 
 
-class BarAbsolutePitchesMetric:
+class BarAbsolutePitchesMetric(Metric):
     """
         barAbsolutePitchesMetric class
 
         Computes the number of notes for each absolute pitch
     """
 
-    def __init__(self):
-        pass
+    def compute_metric(self, metric_config: MetricConfig, score: Score, window_bars_ticks: np.array):
+
+        infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
+
+        self.context_pitch_class_set = set() # Pitches in all context
+        self.track_context_pitch_class_set = set() # Pitches only in the context of the infilling track
+        self.infilling_pitch_class_set = set() # Pitches in the infilled section
+        for idx, track in enumerate(score.tracks):
+            pitches = np.array([note.pitch for note in track.notes])
+            times = np.array([note.time for note in track.notes])
+
+            for i in range(len(window_bars_ticks) - 1):
+                note_idxs = np.where((times >= window_bars_ticks[i]) & (times < window_bars_ticks[i + 1]))[0]
+                if idx == metric_config.infilled_track_idx:
+                    pitch_classes = np.unique(pitches[note_idxs]) % 12
+                    if i in range(metric_config.context_size, infilling_length + metric_config.context_size):
+                        self.infilling_pitch_class_set.update(pitch_classes)
+                    else:
+                        self.track_context_pitch_class_set.update(pitch_classes)
+                else:
+                    pitch_classes = np.unique(pitches[note_idxs]) % 12
+                    self.context_pitch_class_set.update(pitch_classes)
+
+    def write_to_json(self):
+        return
 
 class BarPitchVarietyMetric(Metric):
     """
@@ -30,16 +52,9 @@ class BarPitchVarietyMetric(Metric):
         across all bars.
     """
     @override
-    def compute_metric(self, metric_config: MetricConfig, score: Score):
-        bars_ticks = np.array(get_bars_ticks(score))
+    def compute_metric(self, metric_config: MetricConfig, score: Score, window_bars_ticks: np.array):
 
-        infilling_start_idx = metric_config.infilled_bars[0]
-        infilling_end_idx = metric_config.infilled_bars[1]
-        infilling_length = infilling_end_idx - infilling_start_idx
-
-        #infilling_bars_ticks = bars_ticks[infilling_start_idx:infilling_end_idx]
-        window_bars_ticks = bars_ticks[infilling_start_idx - metric_config.context_size
-                                       :infilling_end_idx + metric_config.context_size+1]
+        infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
 
         self.context_distribution = []
         self.infilling_distribution = []
@@ -58,6 +73,9 @@ class BarPitchVarietyMetric(Metric):
                     track_distribution.append(len(np.unique(pitches[note_idxs]))) # Add number of different pitches
 
             self.context_distribution.append(track_distribution)
+
+    def write_to_json(self):
+        return
     
     def plot_metric(self):
         # Flatten the list using itertools.chain
