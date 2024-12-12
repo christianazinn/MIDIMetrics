@@ -1,4 +1,5 @@
 from lib2to3.fixes.fix_input import context
+from multiprocessing.managers import Value
 
 import numpy as np
 from symusic import Score
@@ -18,7 +19,9 @@ class BarAbsolutePitchesMetric(Metric):
         Computes the number of notes for each absolute pitch
     """
 
-    def compute_metric(self, metric_config: MetricConfig, score: Score, window_bars_ticks: np.array):
+    def compute_metric(self, metric_config: MetricConfig, score: Score, *args, **kwargs):
+
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
 
         infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
 
@@ -37,6 +40,7 @@ class BarAbsolutePitchesMetric(Metric):
                         self.infilling_pitch_class_set.update(pitch_classes)
                     else:
                         self.track_context_pitch_class_set.update(pitch_classes)
+                        self.context_pitch_class_set.update(pitch_classes)
                 else:
                     pitch_classes = np.unique(pitches[note_idxs]) % 12
                     self.context_pitch_class_set.update(pitch_classes)
@@ -52,12 +56,14 @@ class BarPitchVarietyMetric(Metric):
         across all bars.
     """
     @override
-    def compute_metric(self, metric_config: MetricConfig, score: Score, window_bars_ticks: np.array):
+    def compute_metric(self, metric_config: MetricConfig, score: Score, *args, **kwargs):
 
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
         infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
 
         self.context_distribution = []
         self.infilling_distribution = []
+        self.track_context_distribution = []
         for idx, track in enumerate(score.tracks):
             pitches = np.array([note.pitch for note in track.notes])
             times = np.array([note.time for note in track.notes])
@@ -66,13 +72,14 @@ class BarPitchVarietyMetric(Metric):
 
             for i in range(len(window_bars_ticks)-1):
                 note_idxs = np.where((times >= window_bars_ticks[i]) & (times < window_bars_ticks[i+1]))[0]
-                if idx == metric_config.infilled_track_idx and i in range(metric_config.context_size,
-                                                                     infilling_length+metric_config.context_size):
-                    self.infilling_distribution.append(len(np.unique(pitches[note_idxs])))
+                if idx == metric_config.infilled_track_idx:
+                    if i in range(metric_config.context_size,infilling_length+metric_config.context_size):
+                        self.infilling_distribution.append(len(np.unique(pitches[note_idxs])))
+                    else:
+                        self.track_context_distribution.append(len(np.unique(pitches[note_idxs])))
                 else:
                     track_distribution.append(len(np.unique(pitches[note_idxs]))) # Add number of different pitches
-
-            self.context_distribution.append(track_distribution)
+                    self.context_distribution.append(track_distribution)
 
     def write_to_json(self):
         return

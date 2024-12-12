@@ -12,7 +12,8 @@ metric_config = MetricConfig(
     infilled_track_idx=0,
     bar_absolute_pitches= True,
     bar_pitch_variety=True,
-    bar_note_density=True
+    bar_note_density=True,
+    note_durations=True
 )
 
 if __name__ == "__main__":
