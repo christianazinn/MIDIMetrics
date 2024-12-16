@@ -6,7 +6,7 @@ from symusic import Score
 from typing_extensions import override
 
 from classes.metric import Metric
-from classes.metric_config import MetricConfig
+from classes.generation_config import GenerationConfig
 
 import matplotlib.pyplot as plt
 from itertools import chain
@@ -19,11 +19,11 @@ class BarAbsolutePitchesMetric(Metric):
         Computes the number of notes for each absolute pitch
     """
 
-    def compute_metric(self, metric_config: MetricConfig, score: Score, *args, **kwargs):
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
 
         window_bars_ticks = kwargs.get('window_bars_ticks', None)
 
-        infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
+        infilling_length = generation_config.infilled_bars[1] - generation_config.infilled_bars[0]
 
         self.context_pitch_class_set = set() # Pitches in all context
         self.track_context_pitch_class_set = set() # Pitches only in the context of the infilling track
@@ -34,9 +34,9 @@ class BarAbsolutePitchesMetric(Metric):
 
             for i in range(len(window_bars_ticks) - 1):
                 note_idxs = np.where((times >= window_bars_ticks[i]) & (times < window_bars_ticks[i + 1]))[0]
-                if idx == metric_config.infilled_track_idx:
+                if idx == generation_config.infilled_track_idx:
                     pitch_classes = np.unique(pitches[note_idxs]) % 12
-                    if i in range(metric_config.context_size, infilling_length + metric_config.context_size):
+                    if i in range(generation_config.context_size, infilling_length + generation_config.context_size):
                         self.infilling_pitch_class_set.update(pitch_classes)
                     else:
                         self.track_context_pitch_class_set.update(pitch_classes)
@@ -45,8 +45,7 @@ class BarAbsolutePitchesMetric(Metric):
                     pitch_classes = np.unique(pitches[note_idxs]) % 12
                     self.context_pitch_class_set.update(pitch_classes)
 
-    def write_to_json(self):
-        return
+        return self.track_context_pitch_class_set, self.infilling_pitch_class_set, self.context_pitch_class_set
 
 class BarPitchVarietyMetric(Metric):
     """
@@ -56,10 +55,10 @@ class BarPitchVarietyMetric(Metric):
         across all bars.
     """
     @override
-    def compute_metric(self, metric_config: MetricConfig, score: Score, *args, **kwargs):
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
 
         window_bars_ticks = kwargs.get('window_bars_ticks', None)
-        infilling_length = metric_config.infilled_bars[1] - metric_config.infilled_bars[0]
+        infilling_length = generation_config.infilled_bars[1] - generation_config.infilled_bars[0]
 
         self.context_distribution = []
         self.infilling_distribution = []
@@ -72,8 +71,8 @@ class BarPitchVarietyMetric(Metric):
 
             for i in range(len(window_bars_ticks)-1):
                 note_idxs = np.where((times >= window_bars_ticks[i]) & (times < window_bars_ticks[i+1]))[0]
-                if idx == metric_config.infilled_track_idx:
-                    if i in range(metric_config.context_size,infilling_length+metric_config.context_size):
+                if idx == generation_config.infilled_track_idx:
+                    if i in range(generation_config.context_size,infilling_length+generation_config.context_size):
                         self.infilling_distribution.append(len(np.unique(pitches[note_idxs])))
                     else:
                         self.track_context_distribution.append(len(np.unique(pitches[note_idxs])))
@@ -81,8 +80,9 @@ class BarPitchVarietyMetric(Metric):
                     track_distribution.append(len(np.unique(pitches[note_idxs]))) # Add number of different pitches
                     self.context_distribution.append(track_distribution)
 
-    def write_to_json(self):
-        return
+        return (self.track_context_distribution,
+                self.infilling_distribution,
+                None)
     
     def plot_metric(self):
         # Flatten the list using itertools.chain
