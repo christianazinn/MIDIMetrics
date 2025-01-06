@@ -20,6 +20,7 @@ class GenerationConfig:
     infilled_track_idx: int  = None
     infilled_bars: Tuple[int, int] = None
     context_size: int = None
+    filename: str = None
 
     def __post_init__(self):
         if self.generation_type is None:
@@ -52,15 +53,16 @@ def parse_filename(file_path: Path) -> GenerationConfig:
 
     # Extract components from the regex match
     infilled_track_idx = int(match.group(1))  # Extract track ID
-    bar_start = int(match.group(2)) + 1  # Extract starting bar
-    bar_end = int(match.group(3)) + 1  # Extract ending bar
+    bar_start = int(match.group(2))   # Extract starting bar
+    bar_end = int(match.group(3))  # Extract ending bar
 
     # Build the GenerationConfig object
     generation_config = GenerationConfig(
         generation_type="infilling",  # The generation type is "infilling" by default
         infilled_bars=(bar_start, bar_end),
         context_size=4,  # Assuming a fixed context size for now
-        infilled_track_idx=infilled_track_idx
+        infilled_track_idx=infilled_track_idx,
+        filename = str(file_path.name)
     )
 
     return generation_config
