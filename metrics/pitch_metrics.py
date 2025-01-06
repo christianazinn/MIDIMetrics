@@ -16,9 +16,12 @@ from collections import Counter
 
 class BarAbsolutePitchesMetric(Metric):
     """
-        barAbsolutePitchesMetric class
+        BarAbsolutePitchesMetric class
 
-        Computes the number of notes for each absolute pitch
+        Computes the different pitches sets for the infilling, track
+        context and whole context. It then computes if there are pitches
+        present in the infilling region and not in the context. All these
+        numbers are added up for the final analysis.
     """
     def __init__(self):
         super().__init__()
@@ -119,11 +122,13 @@ class BarAbsolutePitchesMetric(Metric):
 
 class BarPitchVarietyMetric(Metric):
     """
-        barPitchVarietyMetric class (should rename UPC as in
+        BarPitchVarietyMetric class (should rename UPC as in
         https://arxiv.org/pdf/2011.06801)
 
-        Computes the distribution of the number of different pitches
-        across all bars.
+        Computes the number of different pitches in each bar in the
+        infilling, track context and whole contexts. Descriptive statistics
+        is computed for each infilling and context portion and can be compared
+        by the computed plots.
     """
 
     def __init__(self):

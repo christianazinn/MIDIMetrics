@@ -1,5 +1,4 @@
 from collections import defaultdict
-from multiprocessing.managers import Value
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -21,6 +20,7 @@ class BarNoteDensityMetric(Metric):
         in the infilling region, in the context in the same track, and in the context
         of all tracks. Descriptive statistics (mean, std. dev, median, min, max)
         is then computed for infilling and context distributions.
+        Plots can be used to visualize the results
     """
 
     def __init__(self):
@@ -172,6 +172,16 @@ class BarNoteDensityMetric(Metric):
 
 class NoteDurationsSetMetric(Metric):
 
+    """
+        Computes durations values in the infilling, track context
+        and whole context regions. Then the count of durations
+        present in the infilling but not the context is counted.
+        Descriptive statistics is used to analyze the overall data
+        across all MIDI files (e.g. avg value in output means
+        the average number of durations present in the infilling
+        but not the context)
+    """
+
     def __init__(self):
         super().__init__()
         # Store individual descriptive statistics for each MIDI file
@@ -283,6 +293,13 @@ class NoteDurationsSetMetric(Metric):
 
 
 class PolyphonyMinMaxMetric(Metric):
+
+    """
+        Computes the minimum and maximum polyphony values
+        for the infilling and track context regions. Through the plots
+        we can see if there are significant differences between the
+        infilling and context portions.
+    """
 
     def __init__(self):
         super().__init__()
