@@ -2,8 +2,11 @@ from pathlib import Path
 from typing import Set, Tuple
 
 import numpy as np
+from matplotlib import pyplot as plt
 from symusic import Score
 from typing_extensions import override
+
+from scipy.spatial.distance import cosine
 
 from classes.generation_config import GenerationConfig
 from classes.metric import Metric
@@ -166,3 +169,179 @@ class NGramsRepetitions(Metric):
                 line = f"{filename} | {ngrams.get('2-note', 0)} | {ngrams.get('3-note', 0)} | {ngrams.get('4-note', 0)} | " \
                        f"{ngrams.get('2-note-ratio', 0):.2f} | {ngrams.get('3-note-ratio', 0):.2f} | {ngrams.get('4-note-ratio', 0):.2f}\n"
                 file.write(line)
+
+class ContentPreservationMetric(Metric):
+
+    def __init__(self):
+        super().__init__()
+        self.file_statistics = []
+        self.original_chroma_vectors = None
+        self.infilled_chroma_vectors = None
+        self.compare_with_original = True
+
+    @override
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
+
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
+
+        infilling_start_ticks = window_bars_ticks[generation_config.context_size]
+        infilling_end_ticks = window_bars_ticks[-generation_config.context_size - 1]
+
+        track = score.tracks[generation_config.infilled_track_idx]
+        pitches = np.array([note.pitch for note in track.notes]).astype(int)
+        durations = np.array([note.duration for note in track.notes]).astype(int)
+        times = np.array([note.time for note in track.notes])
+
+        # 8 time steps for each half bar, as in https://ismir2018.ismir.net/doc/pdfs/107_Paper.pdf
+        time_steps_per_bar = 16
+        time_steps = ((generation_config.infilled_bars[1] - generation_config.infilled_bars[0])
+                      *time_steps_per_bar)
+
+        # Divide the infilling region into time frames
+        frame_ticks = np.linspace(infilling_start_ticks, infilling_end_ticks, num=time_steps + 1, endpoint=True)
+
+        # Compute pitches for each time frame
+        frame_pitches = []
+        for i in range(len(frame_ticks) - 1):
+            frame_start = frame_ticks[i]
+            frame_end = frame_ticks[i + 1]
+
+            # Find notes that either start in this frame or overlap with it
+            notes_in_frame_idxs = np.where(
+                (times < frame_end) & (times + durations > frame_start)
+            )[0]
+            frame_pitches.append(pitches[notes_in_frame_idxs])
+
+        # Convert pitches to chroma vectors for all frames
+        chroma_vectors = self._pitches_to_chroma(frame_pitches, time_steps_per_bar)
+
+        # Save chroma vectors based on the input type (original or infilled)
+        if kwargs.get("is_original", False):
+            self.original_chroma_vectors = chroma_vectors
+        else:
+            self.infilled_chroma_vectors = chroma_vectors
+
+        # Compute cosine similarity hen both chroma matrices have been computed
+        if self.original_chroma_vectors is not None and self.infilled_chroma_vectors is not None:
+            self._compute_similarity(generation_config)
+
+    def _compute_similarity(self, generation_config: GenerationConfig):
+        # Compute cosine similarity for each time step
+        similarities = [
+            1 - cosine(self.original_chroma_vectors[i], self.infilled_chroma_vectors[i])
+            for i in range(min(len(self.original_chroma_vectors), len(self.infilled_chroma_vectors)))
+        ]
+
+        # Compute and return the average similarity as the metric
+        average_similarity = np.mean(similarities)
+
+        self.file_statistics.append({
+            "filename": generation_config.filename,
+            "content_preservation_score": average_similarity,
+            "similarities": similarities
+        })
+
+    @override
+    def analysis(self):
+        return
+
+    def _pitches_to_chroma(self, frame_pitches, time_steps_per_bar):
+        """
+        Convert a list of pitches per frame to smoothed chroma vectors.
+
+        Args:
+            frame_pitches: A list of lists, where each inner list contains the pitches active in a specific time frame.
+            time_steps_per_bar: Number of time steps per bar.
+
+        Returns:
+            A 2D numpy array where each row represents the smoothed chroma vector for a frame.
+        """
+        num_pitches = 12  # 12 pitch classes in a chroma representation
+
+        # Initialize chroma vectors for all frames
+        chroma_vectors = []
+        for frame in frame_pitches:
+            # Initialize a chroma vector for the frame
+            chroma_vector = np.zeros(num_pitches)
+            for pitch in frame:
+                chroma_vector[pitch % num_pitches] += 1
+            chroma_vectors.append(chroma_vector)
+
+        chroma_vectors = np.array(chroma_vectors)
+
+        # Normalize chroma vectors (frame-wise)
+        chroma_vectors = chroma_vectors / (np.linalg.norm(chroma_vectors, axis=1, keepdims=True) + 1e-8)
+
+        # Compute moving average based on dataset frame size
+        frame_size = time_steps_per_bar // 2  # From the reference, smoothing uses half-bar frames
+        smoothed_chroma = np.array([
+            np.mean(chroma_vectors[max(0, i - frame_size // 2):i + frame_size // 2], axis=0)
+            if len(chroma_vectors[max(0, i - frame_size // 2):i + frame_size // 2]) > 0 else np.zeros(num_pitches)
+            for i in range(chroma_vectors.shape[0])
+        ])
+
+        return smoothed_chroma
+
+    def output_results(self, output_folder: Path | str):
+        output_folder = Path(output_folder) / "ContentPreservationMetric"
+        output_folder.mkdir(parents=True, exist_ok=True)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
+
+    def output_to_txt(self, output_folder: Path | str):
+        """
+        Outputs the filename, track context stats, and infilling stats to a text file.
+        """
+
+        with open(output_folder / "content_preservation.txt", 'w') as file:
+            file.write(
+                "Filename | content_preservation_score | similarities \n")
+
+            for stats in self.file_statistics:
+                filename = stats['filename']
+                content_preservation_score = stats['content_preservation_score']
+                similarities = stats['similarities']
+
+                line = f"{filename} | " \
+                       f"{content_preservation_score:.2f} | " \
+                       f"{similarities}\n"
+
+                file.write(line)
+
+    def plot(self, output_folder: Path | str):
+        """
+        Plot smoothed chroma vectors for both original and infilled data.
+
+        Args:
+            original_chroma_vectors: 2D numpy array of original chroma vectors (time steps x pitch classes).
+            infilled_chroma_vectors: 2D numpy array of infilled chroma vectors (time steps x pitch classes).
+            output_folder: Directory where the plot will be saved.
+        """
+
+        # Set up the plot
+        plt.figure(figsize=(16, 8))
+
+        # Plot original chroma vectors
+        plt.subplot(2, 1, 1)
+        plt.imshow(self.original_chroma_vectors.T, aspect='auto', origin='lower', cmap='coolwarm', interpolation='nearest')
+        plt.colorbar(label="Intensity")
+        plt.yticks(ticks=np.arange(12), labels=["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"])
+        plt.xlabel("Time Steps")
+        plt.ylabel("Pitch Classes")
+        plt.title("Original Chroma Vectors")
+
+        # Plot infilled chroma vectors
+        plt.subplot(2, 1, 2)
+        plt.imshow(self.infilled_chroma_vectors.T, aspect='auto', origin='lower', cmap='coolwarm', interpolation='nearest')
+        plt.colorbar(label="Intensity")
+        plt.yticks(ticks=np.arange(12), labels=["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"])
+        plt.xlabel("Time Steps")
+        plt.ylabel("Pitch Classes")
+        plt.title("Infilled Chroma Vectors")
+
+        plt.tight_layout()
+
+        # Save the plot with an appropriate name
+        plot_filename = "chroma_vectors_comparison.png"
+        plt.savefig(output_folder / plot_filename)
+        plt.close()

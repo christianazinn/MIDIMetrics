@@ -18,6 +18,8 @@ class Metric(ABC):
                            or the global level.
     """
 
+    compare_with_original: bool = False
+
     @abstractmethod
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
         """

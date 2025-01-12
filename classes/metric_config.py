@@ -12,6 +12,7 @@ class MetricConfig:
     note_durations_frequency: bool = False
     ngrams_repetitions: bool = False
     polyphony_min_max: bool = False
+    content_preservation: bool = False
 
 
 

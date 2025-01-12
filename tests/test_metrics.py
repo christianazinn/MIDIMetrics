@@ -6,16 +6,17 @@ from classes.metric_processor import MetricsProcessor
 
 from tests_utils import HERE
 
-MIDI_PATHS = list((HERE / "midis").glob("**/*.midi"))
+MIDI_PATHS = list((HERE / "midis").glob("**/*"))
 
 metric_config = MetricConfig(
-    bar_absolute_pitches= True,
-    bar_pitch_variety=True,
-    bar_note_density=True,
-    note_durations_set=True,
+    #bar_absolute_pitches= True,
+    #bar_pitch_variety=True,
+    #bar_note_density=True,
+    #note_durations_set=True,
     #note_durations_frequency=True #TODO! (maybe remove)
-    ngrams_repetitions=True,
-    polyphony_min_max=True
+    #ngrams_repetitions=True,
+    #polyphony_min_max=True,
+    content_preservation=True
 )
 
 if __name__ == "__main__":
@@ -26,4 +27,4 @@ if __name__ == "__main__":
         metric_config
     )
 
-    metrics_processor.compute_metrics(MIDI_PATHS, csv_output = True)
+    metrics_processor.compute_metrics(MIDI_PATHS)

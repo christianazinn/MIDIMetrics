@@ -270,6 +270,15 @@ class BarPitchVarietyMetric(Metric):
         plt.savefig(output_folder / f"context_vs_infilling_{field}.png")
         plt.close()
 
+class BarPitchClassSet():
+    @override
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
+        infilling_length = generation_config.infilled_bars[1] - generation_config.infilled_bars[0]
+
+        self.context_distribution = []
+        self.infilling_distribution = []
+        self.track_context_distribution = []
 
 
 
