@@ -13,7 +13,14 @@ class MetricConfig:
     ngrams_repetitions: bool = False
     polyphony_min_max: bool = False
     content_preservation: bool = False
-
+    upc : bool = False
+    pr : bool = False
+    polyphony : bool = False
+    pv: bool = False
+    rv: bool = False
+    qr: bool = False
+    groove_consistency: bool = False
+    pitch_class_histogram_entropy: bool = False
 
 
 

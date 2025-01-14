@@ -16,7 +16,16 @@ metric_config = MetricConfig(
     #note_durations_frequency=True #TODO! (maybe remove)
     #ngrams_repetitions=True,
     #polyphony_min_max=True,
-    content_preservation=True
+
+    content_preservation=True, # OK
+    upc = True, # OK
+    pr = True, #OK
+    polyphony = True, # OK
+    pv = True, #OK
+    rv = True, #OK
+    qr = True, #OK
+    groove_consistency=True, #OK
+    pitch_class_histogram_entropy = True #OK
 )
 
 if __name__ == "__main__":

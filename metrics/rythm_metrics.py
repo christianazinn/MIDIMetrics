@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 
 import numpy as np
 from symusic import Score
+from typing_extensions import override
 
 from classes.metric import Metric
 from classes.generation_config import GenerationConfig
@@ -473,3 +474,448 @@ class NoteDurationsFrequencyMetric(Metric):
 
     def output_results(self, output_folder: Path | str):
         return
+
+
+class RV(Metric):
+    """
+        Rythm Variations class
+
+        RV measures how many distinct note durations the model plays within a sequence.
+        As in https://musicalmetacreation.org/mume2018/proceedings/Trieu.pdf,
+        it is computed as the average ratio across all sequences of
+        the number of distinct note durations to the total number
+        of notes in the sequence.
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Store statistics for each MIDI file
+        self.compare_with_original = True
+        self.file_statistics = []
+        self.rv_original = None
+        self.rv_infilled = None
+        # Add new structure to store analysis results
+        self.analysis_results = {
+            'average_difference': None,
+            'differences': []
+        }
+
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
+        infilling_start_ticks = window_bars_ticks[generation_config.context_size]
+        infilling_end_ticks = window_bars_ticks[-generation_config.context_size - 1]
+
+        track = score.tracks[generation_config.infilled_track_idx]
+        durations = np.array([note.duration for note in track.notes
+                              if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+
+        # Calculate rhythm variations ratio
+        if len(durations) == 0:
+            rv = np.nan
+        else:
+            unique_durations = len(np.unique(durations))
+            total_notes = len(durations)
+            rv = unique_durations / total_notes
+
+        if kwargs.get("is_original", False):
+            self.rv_original = rv
+            self.file_statistics.append({
+                'filename': generation_config.filename,
+                'rv_original': self.rv_infilled,
+                'rv_infilled': self.rv_original
+            })
+        else:
+            self.rv_infilled = rv
+
+    @override
+    def analysis(self):
+        """Compute average difference between original and infilled RV values."""
+        differences = []
+        for stats in self.file_statistics:
+            if not (np.isnan(stats['rv_original']) or np.isnan(stats['rv_infilled'])):
+                diff = abs(stats['rv_original'] - stats['rv_infilled'])
+                differences.append(diff)
+
+        self.analysis_results['differences'] = differences
+        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+
+        return self.analysis_results
+
+    @override
+    def output_results(self, output_folder: Path | str):
+        """Output results to files."""
+        output_folder = Path(output_folder) / "RV"
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
+
+    def plot(self, output_folder: Path | str):
+        """
+        Plot rhythm variation values for original and infilled MIDI files.
+        """
+        # Extract data, filtering out NaN values
+        valid_stats = [(stats['rv_original'], stats['rv_infilled'], stats['filename'])
+                       for stats in self.file_statistics
+                       if not (np.isnan(stats['rv_original']) or np.isnan(stats['rv_infilled']))]
+
+        if not valid_stats:
+            print("No valid data points to plot")
+            return
+
+        original_values, infilled_values, filenames = zip(*valid_stats)
+        indices = list(range(len(filenames)))
+
+        # Create plot
+        plt.figure(figsize=(10, 6))
+
+        # Plot original RV values
+        plt.plot(indices, original_values, 'ro', label='Original RV')
+
+        # Plot infilled RV values
+        plt.plot(indices, infilled_values, 'bo', label='Infilled RV')
+
+        # Add connecting lines between original and infilled points
+        for i in range(len(indices)):
+            plt.plot([indices[i], indices[i]],
+                     [original_values[i], infilled_values[i]],
+                     'k--', lw=1)
+
+        # Annotate plot
+        plt.title('Rhythm Variations (RV) of Original and Infilled MIDI Files')
+        plt.xlabel('MIDI File Index')
+        plt.ylabel('RV Value (Unique Durations / Total Notes)')
+        plt.xticks(indices, [f"File {i}" for i in indices],
+                   rotation=45, ha='right', fontsize=8)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save plot
+        plt.savefig(output_folder / "rv_original_vs_infilled.png")
+        plt.close()
+
+    def output_to_txt(self, output_folder: Path | str):
+        """
+        Write the RV values for each file to a text file.
+        """
+        output_file = Path(output_folder) / "rv_results.txt"
+
+        with output_file.open(mode='w') as file:
+            file.write("Filename\tRV Original\tRV Infilled\tDifference\n")
+            for i, stats in enumerate(self.file_statistics):
+                if not (np.isnan(stats['rv_original']) or np.isnan(stats['rv_infilled'])):
+                    difference = self.analysis_results['differences'][i]
+                    file.write(f"{stats['filename']}\t"
+                               f"{stats['rv_original']:.4f}\t"
+                               f"{stats['rv_infilled']:.4f}\t"
+                               f"{difference:.4f}\n")
+                else:
+                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+
+            # Add average difference at the end
+            file.write(f"\nAverage Difference: "
+                       f"{self.analysis_results['average_difference']:.4f}")
+
+class QR(Metric):
+    """
+        Qualified Rhythm frequency class
+
+        QR measures how many distinct note durations the model plays within a sequence,
+        considering only qualified note durations (from 1/32 up to 1 bar long notes).
+        As in https://musicalmetacreation.org/mume2018/proceedings/Trieu.pdf,
+        it is computed as the average ratio across all sequences of
+        the number of distinct qualified note durations to the total number of notes in the sequence.
+        In https://arxiv.org/pdf/1709.06298 every note above 1/32 is considered
+        qualified (definition too weak imo).
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Store statistics for each MIDI file
+        self.compare_with_original = True
+        self.file_statistics = []
+        self.qr_original = None
+        self.qr_infilled = None
+        # Add new structure to store analysis results
+        self.analysis_results = {
+            'average_difference': None,
+            'differences': []
+        }
+
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
+        infilling_start_ticks = window_bars_ticks[generation_config.context_size]
+        infilling_end_ticks = window_bars_ticks[-generation_config.context_size - 1]
+
+        track = score.tracks[generation_config.infilled_track_idx]
+        durations = np.array([note.duration for note in track.notes
+                              if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+
+        # Define qualified durations from 1/32 to 1 bar long notes
+        qualified_durations = [score.tpq / x for x in [2**i for i in range(-5, 3)]]
+
+        # Calculate qualified rhythm variations ratio
+        if len(durations) == 0:
+            qr = np.nan
+        else:
+            qualified_durations = len([d for d in durations if d in qualified_durations])
+            total_notes = len(durations)
+            qr = qualified_durations / total_notes
+
+        if kwargs.get("is_original", False):
+            self.qr_original = qr
+            self.file_statistics.append({
+                'filename': generation_config.filename,
+                'qr_original': self.qr_infilled,
+                'qr_infilled': self.qr_original
+            })
+        else:
+            self.qr_infilled = qr
+
+    @override
+    def analysis(self):
+        """Compute average difference between original and infilled QR values."""
+        differences = []
+        for stats in self.file_statistics:
+            if not (np.isnan(stats['qr_original']) or np.isnan(stats['qr_infilled'])):
+                diff = abs(stats['qr_original'] - stats['qr_infilled'])
+                differences.append(diff)
+
+        self.analysis_results['differences'] = differences
+        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+
+        return self.analysis_results
+
+    @override
+    def output_results(self, output_folder: Path | str):
+        """Output results to files."""
+        output_folder = Path(output_folder) / "QR"
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
+
+    def plot(self, output_folder: Path | str):
+        """
+        Plot qualified rhythm variation values for original and infilled MIDI files.
+        """
+        # Extract data, filtering out NaN values
+        valid_stats = [(stats['qr_original'], stats['qr_infilled'], stats['filename'])
+                       for stats in self.file_statistics
+                       if not (np.isnan(stats['qr_original']) or np.isnan(stats['qr_infilled']))]
+
+        if not valid_stats:
+            print("No valid data points to plot")
+            return
+
+        original_values, infilled_values, filenames = zip(*valid_stats)
+        indices = list(range(len(filenames)))
+
+        # Create plot
+        plt.figure(figsize=(10, 6))
+
+        # Plot original QR values
+        plt.plot(indices, original_values, 'ro', label='Original QR')
+
+        # Plot infilled QR values
+        plt.plot(indices, infilled_values, 'bo', label='Infilled QR')
+
+        # Add connecting lines between original and infilled points
+        for i in range(len(indices)):
+            plt.plot([indices[i], indices[i]],
+                     [original_values[i], infilled_values[i]],
+                     'k--', lw=1)
+
+        # Annotate plot
+        plt.title('Qualified Rhythm Variations (QR) of Original and Infilled MIDI Files')
+        plt.xlabel('MIDI File Index')
+        plt.ylabel('QR Value (Qualified Unique Durations / Total Notes)')
+        plt.xticks(indices, [f"File {i}" for i in indices],
+                   rotation=45, ha='right', fontsize=8)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save plot
+        plt.savefig(output_folder / "qr_original_vs_infilled.png")
+        plt.close()
+
+    def output_to_txt(self, output_folder: Path | str):
+        """
+        Write the QR values for each file to a text file.
+        """
+        output_file = Path(output_folder) / "qr_results.txt"
+
+        with output_file.open(mode='w') as file:
+            file.write("Filename\tQR Original\tQR Infilled\tDifference\n")
+            for i, stats in enumerate(self.file_statistics):
+                if not (np.isnan(stats['qr_original']) or np.isnan(stats['qr_infilled'])):
+                    difference = self.analysis_results['differences'][i]
+                    file.write(f"{stats['filename']}\t"
+                               f"{stats['qr_original']:.4f}\t"
+                               f"{stats['qr_infilled']:.4f}\t"
+                               f"{difference:.4f}\n")
+                else:
+                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+
+            # Add average difference at the end
+            file.write(f"\nAverage Difference: "
+                       f"{self.analysis_results['average_difference']:.4f}")
+
+class GrooveConsistency(Metric):
+    """
+    GrooveConsistency class
+
+    Originally presented in https://arxiv.org/pdf/2008.01307 (with the
+    name of Grooving Pattern Similarity), helps in measuring the
+    music’s rhythmicity. If a piece possesses a clear sense of
+    rhythm, the grooving patterns between pairs of bars should
+    be similar, thereby producing high GS scores; on the other
+    hand, if the rhythm feels unsteady, the grooving patterns
+    across bars should be erratic, resulting in low GS scores.
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Store statistics for each MIDI file
+        self.compare_with_original = True
+        self.file_statistics = []
+        self.groove_original = None
+        self.groove_infilled = None
+        # Add new structure to store analysis results
+        self.analysis_results = {
+            'average_difference': None,
+            'differences': []
+        }
+
+    def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
+        window_bars_ticks = kwargs.get('window_bars_ticks', None)
+        context_size = generation_config.context_size
+
+        infilled_bars = generation_config.infilled_bars[1] - generation_config.infilled_bars[0]
+
+        track = score.tracks[generation_config.infilled_track_idx]
+        times = np.array([note.time for note in track.notes])
+
+        ticks_per_bar = window_bars_ticks[-1] - window_bars_ticks[-2]
+
+        # Initialize the grooving pattern matrix
+        grooving_pattern_matrix = np.zeros((infilled_bars, ticks_per_bar), dtype=bool)
+
+        # Fill in the grooving pattern matrix for each bar
+        for i in range(infilled_bars):
+            bar_start = window_bars_ticks[i + context_size]
+            bar_end = window_bars_ticks[i + context_size + 1]
+            bar_times = times[(times >= bar_start) & (times < bar_end)] - bar_start
+
+            grooving_pattern_matrix[i, bar_times] = 1
+
+        # Compute pairwise grooving pattern similarities between adjacent bars
+        hamming_distance = np.count_nonzero(
+            grooving_pattern_matrix[:-1] != grooving_pattern_matrix[1:]
+        )
+
+        groove_consistency = 1 - hamming_distance / (ticks_per_bar * infilled_bars)
+
+        # Store the result for original or infilled based on the flag
+        if kwargs.get("is_original", False):
+            self.groove_original = groove_consistency
+            self.file_statistics.append({
+                'filename': generation_config.filename,
+                'groove_original': self.groove_original,
+                'groove_infilled': self.groove_infilled
+            })
+        else:
+            self.groove_infilled = groove_consistency
+
+    @override
+    def analysis(self):
+        """Compute average difference between original and infilled Groove Consistency values."""
+        differences = []
+        for stats in self.file_statistics:
+            if not (np.isnan(stats['groove_original']) or np.isnan(stats['groove_infilled'])):
+                diff = abs(stats['groove_original'] - stats['groove_infilled'])
+                differences.append(diff)
+
+        self.analysis_results['differences'] = differences
+        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+
+        return self.analysis_results
+
+    @override
+    def output_results(self, output_folder: Path | str):
+        """Output results to files."""
+        output_folder = Path(output_folder) / "GrooveConsistency"
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
+
+    def plot(self, output_folder: Path | str):
+        """
+        Plot Groove Consistency values for original and infilled MIDI files.
+        """
+        # Extract data, filtering out NaN values
+        valid_stats = [(stats['groove_original'], stats['groove_infilled'], stats['filename'])
+                       for stats in self.file_statistics
+                       if not (np.isnan(stats['groove_original']) or np.isnan(stats['groove_infilled']))]
+
+        if not valid_stats:
+            print("No valid data points to plot")
+            return
+
+        original_values, infilled_values, filenames = zip(*valid_stats)
+        indices = list(range(len(filenames)))
+
+        # Create plot
+        plt.figure(figsize=(10, 6))
+
+        # Plot original Groove Consistency values
+        plt.plot(indices, original_values, 'ro', label='Original Groove Consistency')
+
+        # Plot infilled Groove Consistency values
+        plt.plot(indices, infilled_values, 'bo', label='Infilled Groove Consistency')
+
+        # Add connecting lines between original and infilled points
+        for i in range(len(indices)):
+            plt.plot([indices[i], indices[i]],
+                     [original_values[i], infilled_values[i]],
+                     'k--', lw=1)
+
+        # Annotate plot
+        plt.title('Groove Consistency of Original and Infilled MIDI Files')
+        plt.xlabel('MIDI File Index')
+        plt.ylabel('Groove Consistency (Average GS)')
+        plt.xticks(indices, [f"File {i}" for i in indices],
+                   rotation=45, ha='right', fontsize=8)
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        # Save plot
+        plt.savefig(output_folder / "groove_consistency_original_vs_infilled.png")
+        plt.close()
+
+    def output_to_txt(self, output_folder: Path | str):
+        """
+        Write the Groove Consistency values for each file to a text file.
+        """
+        output_file = Path(output_folder) / "groove_consistency_results.txt"
+
+        with output_file.open(mode='w') as file:
+
+            # Add average difference at the end
+            file.write(f"\nAverage Difference: "
+                       f"{self.analysis_results['average_difference']:.4f}\n")
+
+            file.write("Filename\tGroove Original\tGroove Infilled\tDifference\n")
+            for i, stats in enumerate(self.file_statistics):
+                if not (np.isnan(stats['groove_original']) or np.isnan(stats['groove_infilled'])):
+                    difference = self.analysis_results['differences'][i]
+                    file.write(f"{stats['filename']}\t"
+                               f"{stats['groove_original']:.4f}\t"
+                               f"{stats['groove_infilled']:.4f}\t"
+                               f"{difference:.4f}\n")
+                else:
+                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")

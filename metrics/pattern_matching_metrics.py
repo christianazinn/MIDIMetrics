@@ -172,12 +172,26 @@ class NGramsRepetitions(Metric):
 
 class ContentPreservationMetric(Metric):
 
+    """
+        ContentPreservationMetric class
+
+        Describes how much content it retains from the original. Computed by correlating
+        the chroma representation of the generated segment with that of the
+        corresponding segment in the source style.
+        See https://ismir2018.ismir.net/doc/pdfs/107_Paper.pdf for deeper
+        explanation.
+    """
+
     def __init__(self):
         super().__init__()
         self.file_statistics = []
         self.original_chroma_vectors = None
         self.infilled_chroma_vectors = None
         self.compare_with_original = True
+        self.analysis_results = {
+            'average_difference': None,
+            'differences': []
+        }
 
     @override
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -218,12 +232,10 @@ class ContentPreservationMetric(Metric):
         # Save chroma vectors based on the input type (original or infilled)
         if kwargs.get("is_original", False):
             self.original_chroma_vectors = chroma_vectors
+            # Compute cosine similarity when both chroma matrices have been computed
+            self._compute_similarity(generation_config)
         else:
             self.infilled_chroma_vectors = chroma_vectors
-
-        # Compute cosine similarity hen both chroma matrices have been computed
-        if self.original_chroma_vectors is not None and self.infilled_chroma_vectors is not None:
-            self._compute_similarity(generation_config)
 
     def _compute_similarity(self, generation_config: GenerationConfig):
         # Compute cosine similarity for each time step
@@ -243,7 +255,32 @@ class ContentPreservationMetric(Metric):
 
     @override
     def analysis(self):
-        return
+        """
+        Analyze the content preservation scores across all files and compute statistics.
+
+        Returns:
+            A dictionary containing the average content preservation score, minimum score,
+            maximum score, and a list of all scores for further analysis.
+        """
+        scores = [stats["content_preservation_score"] for stats in self.file_statistics]
+
+        if not scores:
+            self.analysis_results = {
+                "average_score": None,
+                "min_score": None,
+                "max_score": None,
+                "scores": []
+            }
+            return
+
+        self.analysis_results = {
+            "average_score": np.mean(scores),
+            "min_score": np.min(scores),
+            "max_score": np.max(scores),
+            "scores": scores
+        }
+
+        return self.analysis_results
 
     def _pitches_to_chroma(self, frame_pitches, time_steps_per_bar):
         """
@@ -293,7 +330,18 @@ class ContentPreservationMetric(Metric):
         Outputs the filename, track context stats, and infilling stats to a text file.
         """
 
+        average_score = self.analysis_results["average_score"]
+        min_score = self.analysis_results["min_score"]
+        max_score = self.analysis_results["max_score"]
+
+
         with open(output_folder / "content_preservation.txt", 'w') as file:
+            file.write("Summary Statistics:\n")
+            file.write(f"Average Score: {average_score:.2f}\n" if average_score is not None else "Average Score: N/A\n")
+            file.write(f"Minimum Score: {min_score:.2f}\n" if min_score is not None else "Minimum Score: N/A\n")
+            file.write(f"Maximum Score: {max_score:.2f}\n" if max_score is not None else "Maximum Score: N/A\n")
+            file.write("\n")
+
             file.write(
                 "Filename | content_preservation_score | similarities \n")
 
