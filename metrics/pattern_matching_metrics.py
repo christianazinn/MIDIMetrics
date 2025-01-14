@@ -240,9 +240,15 @@ class ContentPreservationMetric(Metric):
     def _compute_similarity(self, generation_config: GenerationConfig):
         # Compute cosine similarity for each time step
         similarities = [
+            # RuntimeWarning if a vector in the cosine similarity is all 0
+            # because of square root computation(See below)
             1 - cosine(self.original_chroma_vectors[i], self.infilled_chroma_vectors[i])
             for i in range(min(len(self.original_chroma_vectors), len(self.infilled_chroma_vectors)))
         ]
+
+        # So we set the similarity in that case to 0. Compatible with
+        # cosine similarity definition (if a vector is 0 similarity is 0)
+        similarities = [0.0 if np.isnan(sim) else sim for sim in similarities]
 
         # Compute and return the average similarity as the metric
         average_similarity = np.mean(similarities)
@@ -388,8 +394,3 @@ class ContentPreservationMetric(Metric):
         plt.title("Infilled Chroma Vectors")
 
         plt.tight_layout()
-
-        # Save the plot with an appropriate name
-        plot_filename = "chroma_vectors_comparison.png"
-        plt.savefig(output_folder / plot_filename)
-        plt.close()

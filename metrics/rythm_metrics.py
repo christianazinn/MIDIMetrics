@@ -478,7 +478,7 @@ class NoteDurationsFrequencyMetric(Metric):
 
 class RV(Metric):
     """
-        Rythm Variations class
+        Rhythm Variations class
 
         RV measures how many distinct note durations the model plays within a sequence.
         As in https://musicalmetacreation.org/mume2018/proceedings/Trieu.pdf,
@@ -496,8 +496,10 @@ class RV(Metric):
         self.rv_infilled = None
         # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -507,7 +509,7 @@ class RV(Metric):
 
         track = score.tracks[generation_config.infilled_track_idx]
         durations = np.array([note.duration for note in track.notes
-                              if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+                              if infilling_start_ticks <= note.time < infilling_end_ticks])
 
         # Calculate rhythm variations ratio
         if len(durations) == 0:
@@ -521,23 +523,24 @@ class RV(Metric):
             self.rv_original = rv
             self.file_statistics.append({
                 'filename': generation_config.filename,
-                'rv_original': self.rv_infilled,
-                'rv_infilled': self.rv_original
+                'rv_original': self.rv_original,
+                'rv_infilled': self.rv_infilled
             })
         else:
             self.rv_infilled = rv
 
     @override
     def analysis(self):
-        """Compute average difference between original and infilled RV values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['rv_original']) or np.isnan(stats['rv_infilled'])):
-                diff = abs(stats['rv_original'] - stats['rv_infilled'])
-                differences.append(diff)
+        """Compute statistics of original and infilled RV values."""
+        original_values = [stats['rv_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['rv_original'])]
+        infilled_values = [stats['rv_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['rv_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
@@ -566,6 +569,12 @@ class RV(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         # Create plot
         plt.figure(figsize=(10, 6))
 
@@ -580,6 +589,14 @@ class RV(Metric):
             plt.plot([indices[i], indices[i]],
                      [original_values[i], infilled_values[i]],
                      'k--', lw=1)
+
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2, label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2, label='Std Dev Infilled')
 
         # Annotate plot
         plt.title('Rhythm Variations (RV) of Original and Infilled MIDI Files')
@@ -602,20 +619,17 @@ class RV(Metric):
         output_file = Path(output_folder) / "rv_results.txt"
 
         with output_file.open(mode='w') as file:
-            file.write("Filename\tRV Original\tRV Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['rv_original']) or np.isnan(stats['rv_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['rv_original']:.4f}\t"
-                               f"{stats['rv_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tRV Original\tRV Infilled\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['rv_original']:.4f}\t"
+                           f"{stats['rv_infilled']:.4f}\n")
 
 class QR(Metric):
     """
@@ -632,15 +646,15 @@ class QR(Metric):
 
     def __init__(self):
         super().__init__()
-        # Store statistics for each MIDI file
         self.compare_with_original = True
         self.file_statistics = []
         self.qr_original = None
         self.qr_infilled = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -650,7 +664,7 @@ class QR(Metric):
 
         track = score.tracks[generation_config.infilled_track_idx]
         durations = np.array([note.duration for note in track.notes
-                              if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+                              if infilling_start_ticks <= note.time < infilling_end_ticks])
 
         # Define qualified durations from 1/32 to 1 bar long notes
         qualified_durations = [score.tpq / x for x in [2**i for i in range(-5, 3)]]
@@ -667,23 +681,24 @@ class QR(Metric):
             self.qr_original = qr
             self.file_statistics.append({
                 'filename': generation_config.filename,
-                'qr_original': self.qr_infilled,
-                'qr_infilled': self.qr_original
+                'qr_original': self.qr_original,
+                'qr_infilled': self.qr_infilled
             })
         else:
             self.qr_infilled = qr
 
     @override
     def analysis(self):
-        """Compute average difference between original and infilled QR values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['qr_original']) or np.isnan(stats['qr_infilled'])):
-                diff = abs(stats['qr_original'] - stats['qr_infilled'])
-                differences.append(diff)
+        """Compute statistics of original and infilled QR values."""
+        original_values = [stats['qr_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['qr_original'])]
+        infilled_values = [stats['qr_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['qr_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
@@ -712,6 +727,12 @@ class QR(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         # Create plot
         plt.figure(figsize=(10, 6))
 
@@ -727,13 +748,24 @@ class QR(Metric):
                      [original_values[i], infilled_values[i]],
                      'k--', lw=1)
 
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2, label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2, label='Std Dev Infilled')
+
         # Annotate plot
         plt.title('Qualified Rhythm Variations (QR) of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('QR Value (Qualified Unique Durations / Total Notes)')
         plt.xticks(indices, [f"File {i}" for i in indices],
                    rotation=45, ha='right', fontsize=8)
+
+        # Update legend with mean and std. deviation
         plt.legend()
+
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -743,50 +775,47 @@ class QR(Metric):
 
     def output_to_txt(self, output_folder: Path | str):
         """
-        Write the QR values for each file to a text file.
+        Write the QR values and statistics to a text file.
         """
         output_file = Path(output_folder) / "qr_results.txt"
 
         with output_file.open(mode='w') as file:
-            file.write("Filename\tQR Original\tQR Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['qr_original']) or np.isnan(stats['qr_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['qr_original']:.4f}\t"
-                               f"{stats['qr_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tQR Original\tQR Infilled\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['qr_original']:.4f}\t"
+                           f"{stats['qr_infilled']:.4f}\n")
 
 class GrooveConsistency(Metric):
     """
-    GrooveConsistency class
+        GrooveConsistency class
 
-    Originally presented in https://arxiv.org/pdf/2008.01307 (with the
-    name of Grooving Pattern Similarity), helps in measuring the
-    music’s rhythmicity. If a piece possesses a clear sense of
-    rhythm, the grooving patterns between pairs of bars should
-    be similar, thereby producing high GS scores; on the other
-    hand, if the rhythm feels unsteady, the grooving patterns
-    across bars should be erratic, resulting in low GS scores.
+        Originally presented in https://arxiv.org/pdf/2008.01307 (with the
+        name of Grooving Pattern Similarity), helps in measuring the
+        music’s rhythmicity. If a piece possesses a clear sense of
+        rhythm, the grooving patterns between pairs of bars should
+        be similar, thereby producing high GS scores; on the other
+        hand, if the rhythm feels unsteady, the grooving patterns
+        across bars should be erratic, resulting in low GS scores.
     """
 
     def __init__(self):
         super().__init__()
-        # Store statistics for each MIDI file
         self.compare_with_original = True
         self.file_statistics = []
         self.groove_original = None
         self.groove_infilled = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -794,10 +823,8 @@ class GrooveConsistency(Metric):
         context_size = generation_config.context_size
 
         infilled_bars = generation_config.infilled_bars[1] - generation_config.infilled_bars[0]
-
         track = score.tracks[generation_config.infilled_track_idx]
         times = np.array([note.time for note in track.notes])
-
         ticks_per_bar = window_bars_ticks[-1] - window_bars_ticks[-2]
 
         # Initialize the grooving pattern matrix
@@ -808,14 +835,12 @@ class GrooveConsistency(Metric):
             bar_start = window_bars_ticks[i + context_size]
             bar_end = window_bars_ticks[i + context_size + 1]
             bar_times = times[(times >= bar_start) & (times < bar_end)] - bar_start
-
             grooving_pattern_matrix[i, bar_times] = 1
 
         # Compute pairwise grooving pattern similarities between adjacent bars
         hamming_distance = np.count_nonzero(
             grooving_pattern_matrix[:-1] != grooving_pattern_matrix[1:]
         )
-
         groove_consistency = 1 - hamming_distance / (ticks_per_bar * infilled_bars)
 
         # Store the result for original or infilled based on the flag
@@ -831,15 +856,16 @@ class GrooveConsistency(Metric):
 
     @override
     def analysis(self):
-        """Compute average difference between original and infilled Groove Consistency values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['groove_original']) or np.isnan(stats['groove_infilled'])):
-                diff = abs(stats['groove_original'] - stats['groove_infilled'])
-                differences.append(diff)
+        """Compute statistics of original and infilled Groove Consistency values."""
+        original_values = [stats['groove_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['groove_original'])]
+        infilled_values = [stats['groove_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['groove_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
@@ -868,6 +894,12 @@ class GrooveConsistency(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         # Create plot
         plt.figure(figsize=(10, 6))
 
@@ -883,13 +915,26 @@ class GrooveConsistency(Metric):
                      [original_values[i], infilled_values[i]],
                      'k--', lw=1)
 
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2,
+                         label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2,
+                         label='Std Dev Infilled')
+
         # Annotate plot
         plt.title('Groove Consistency of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('Groove Consistency (Average GS)')
         plt.xticks(indices, [f"File {i}" for i in indices],
                    rotation=45, ha='right', fontsize=8)
+
+        # Update legend with mean and std. deviation
         plt.legend()
+
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -899,23 +944,19 @@ class GrooveConsistency(Metric):
 
     def output_to_txt(self, output_folder: Path | str):
         """
-        Write the Groove Consistency values for each file to a text file.
+        Write the Groove Consistency values and statistics to a text file.
         """
         output_file = Path(output_folder) / "groove_consistency_results.txt"
 
         with output_file.open(mode='w') as file:
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tGroove Original\tGroove Infilled\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}\n")
-
-            file.write("Filename\tGroove Original\tGroove Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['groove_original']) or np.isnan(stats['groove_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['groove_original']:.4f}\t"
-                               f"{stats['groove_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['groove_original']:.4f}\t"
+                           f"{stats['groove_infilled']:.4f}\n")

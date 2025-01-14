@@ -281,7 +281,6 @@ class BarPitchClassSet():
         self.infilling_distribution = []
         self.track_context_distribution = []
 
-
 class UPC(Metric):
     """
         Computes the number of used pitch classes per bar (from 0 to 12).
@@ -291,15 +290,15 @@ class UPC(Metric):
 
     def __init__(self):
         super().__init__()
-        # Store statistics for each MIDI file
         self.compare_with_original = True
         self.file_statistics = []
         self.original_upc = None
         self.infilled_upc = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'avg_original': None,
+            'std_original': None,
+            'avg_infilled': None,
+            'std_infilled': None,
         }
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -330,26 +329,24 @@ class UPC(Metric):
 
         if kwargs.get("is_original", False):
             self.original_upc = upc
-
             self.file_statistics.append({
                 'filename': generation_config.filename,
-                'upc_original': self.infilled_upc,
-                'upc_infilled': self.original_upc
+                'upc_original': self.original_upc,
+                'upc_infilled': self.infilled_upc
             })
         else:
             self.infilled_upc = upc
 
     @override
     def analysis(self):
-        # Compute differences between original and infilled UPC values
-        differences = []
-        for stats in self.file_statistics:
-            diff = abs(stats['upc_original'] - stats['upc_infilled'])
-            differences.append(diff)
+        """Compute average and standard deviation of original and infilled UPC values."""
+        original_values = [stats['upc_original'] for stats in self.file_statistics if not np.isnan(stats['upc_original'])]
+        infilled_values = [stats['upc_infilled'] for stats in self.file_statistics if not np.isnan(stats['upc_infilled'])]
 
-        # Store the results
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['avg_original'] = np.mean(original_values) if original_values else np.nan
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else np.nan
+        self.analysis_results['avg_infilled'] = np.mean(infilled_values) if infilled_values else np.nan
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else np.nan
 
         return self.analysis_results
 
@@ -365,38 +362,57 @@ class UPC(Metric):
         """
         Plot UPC values for original and infilled MIDI files.
         """
-        # Extract data
-        original_values = [stats['upc_original'] for stats in self.file_statistics]
-        infilled_values = [stats['upc_infilled'] for stats in self.file_statistics]
-        filenames = [stats['filename'] for stats in self.file_statistics]
+        valid_stats = [(stats['upc_original'], stats['upc_infilled'], stats['filename'])
+                      for stats in self.file_statistics
+                      if not (np.isnan(stats['upc_original']) or np.isnan(stats['upc_infilled']))]
 
-        # Use indices as x-axis labels instead of filenames
+        if not valid_stats:
+            print("No valid data points to plot")
+            return
+
+        original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
-        # Create plot
+        # Retrieve analysis results
+        avg_original = self.analysis_results['avg_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['avg_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         plt.figure(figsize=(10, 6))
 
-        # Plot original UPC values (without connections between dots)
+        # Plot original UPC values
         plt.plot(indices, original_values, 'ro', label='Original UPC')
 
-        # Plot infilled UPC values (without connections between dots)
+        # Plot infilled UPC values
         plt.plot(indices, infilled_values, 'bo', label='Infilled UPC')
 
-        # Add horizontal lines connecting original and infilled points
+        # Add connecting lines between original and infilled points
         for i in range(len(indices)):
-            plt.plot([indices[i], indices[i]], [original_values[i], infilled_values[i]], 'k--', lw=1)
+            plt.plot([indices[i], indices[i]],
+                     [original_values[i], infilled_values[i]],
+                     'k--', lw=1)
 
-        # Annotate plot
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5,
+                   label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original,
+                        color='r', alpha=0.2, label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5,
+                   label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled,
+                        color='b', alpha=0.2, label='Std Dev Infilled')
+
         plt.title('UPC (Used Pitch Classes) of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('UPC Value')
         plt.xticks(indices, [f"File {i}" for i in indices], rotation=45, ha='right', fontsize=8)
         plt.legend()
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
-        # Save plot with an appropriate name
-        output_folder = Path(output_folder)
-        output_folder.mkdir(parents=True, exist_ok=True)
         plt.savefig(output_folder / "upc_original_vs_infilled.png")
         plt.close()
 
@@ -407,35 +423,37 @@ class UPC(Metric):
         output_file = Path(output_folder) / "upc_results.txt"
 
         with output_file.open(mode='w') as file:
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: {self.analysis_results['average_difference']:.4f}\n")
+            file.write(f"Average Original UPC: {self.analysis_results['avg_original']:.4f}\n")
+            file.write(f"Std Dev Original UPC: {self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Average Infilled UPC: {self.analysis_results['avg_infilled']:.4f}\n")
+            file.write(f"Std Dev Infilled UPC: {self.analysis_results['std_infilled']:.4f}\n\n")
 
-            file.write("Filename\tUPC Original\tUPC Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                difference = self.analysis_results['differences'][i]
-                file.write(f"{stats['filename']}\t{stats['upc_original']}\t{stats['upc_infilled']}\t{difference:.4f}\n")
-
+            file.write("Filename\tUPC Original\tUPC Infilled\n")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                          f"{stats['upc_original']:.4f}\t"
+                          f"{stats['upc_infilled']:.4f}\n")
 
 class Polyphony(Metric):
     """
-        Return the average number of pitches being played concurrently.
+    Return the average number of pitches being played concurrently.
 
-        The polyphony is defined as the average number of pitches being
-        played at the same time, evaluated only at time steps where at least
-        one pitch is on. Drum tracks are ignored. Return NaN if no note is
-        found. Used here for example https://arxiv.org/pdf/2212.11134
+    The polyphony is defined as the average number of pitches being
+    played at the same time, evaluated only at time steps where at least
+    one pitch is on. Drum tracks are ignored. Return NaN if no note is
+    found. Used here for example https://arxiv.org/pdf/2212.11134
     """
     def __init__(self):
         super().__init__()
-        # Store statistics for each MIDI file
         self.compare_with_original = True
         self.file_statistics = []
         self.p_original = None
         self.p_infilled = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'avg_original': None,
+            'std_original': None,
+            'avg_infilled': None,
+            'std_infilled': None,
         }
 
     def _get_pianoroll(self, notes: list[symusic.Note], infilling_start: int, length: int) -> np.ndarray:
@@ -454,40 +472,37 @@ class Polyphony(Metric):
         infilling_end_ticks = window_bars_ticks[-generation_config.context_size - 1]
 
         track = score.tracks[generation_config.infilled_track_idx]
-        notes = np.array([note for note in track.notes
-                          if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+        notes = [note for note in track.notes
+                 if infilling_start_ticks <= note.time < infilling_end_ticks]
         length = infilling_end_ticks - infilling_start_ticks
 
         pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
-
-        # max value for denominator is length of the section, min value 0
         denominator = np.count_nonzero(pianoroll.sum(1) > 0)
         if denominator < 1:
             p = np.nan
-        # min value will be 1.0 (if we have only single notes)
-        p = pianoroll.sum() / denominator
+        else:
+            p = pianoroll.sum() / denominator
 
         if kwargs.get("is_original", False):
             self.p_original = p
             self.file_statistics.append({
                 'filename': generation_config.filename,
-                'p_original': self.p_infilled,
-                'p_infilled': self.p_original
+                'p_original': self.p_original,
+                'p_infilled': self.p_infilled
             })
         else:
             self.p_infilled = p
 
     @override
     def analysis(self):
-        """Compute average difference between original and infilled polyphony values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['p_original']) or np.isnan(stats['p_infilled'])):
-                diff = abs(stats['p_original'] - stats['p_infilled'])
-                differences.append(diff)
+        """Compute average and standard deviation of original and infilled polyphony values."""
+        original_values = [stats['p_original'] for stats in self.file_statistics if not np.isnan(stats['p_original'])]
+        infilled_values = [stats['p_infilled'] for stats in self.file_statistics if not np.isnan(stats['p_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['avg_original'] = np.mean(original_values) if original_values else np.nan
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else np.nan
+        self.analysis_results['avg_infilled'] = np.mean(infilled_values) if infilled_values else np.nan
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else np.nan
 
         return self.analysis_results
 
@@ -504,7 +519,6 @@ class Polyphony(Metric):
         """
         Plot polyphony values for original and infilled MIDI files.
         """
-        # Extract data, filtering out NaN values
         valid_stats = [(stats['p_original'], stats['p_infilled'], stats['filename'])
                        for stats in self.file_statistics
                        if not (np.isnan(stats['p_original']) or np.isnan(stats['p_infilled']))]
@@ -516,7 +530,12 @@ class Polyphony(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
-        # Create plot
+        # Retrieve analysis results
+        avg_original = self.analysis_results['avg_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['avg_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         plt.figure(figsize=(10, 6))
 
         # Plot original polyphony values
@@ -531,16 +550,27 @@ class Polyphony(Metric):
                      [original_values[i], infilled_values[i]],
                      'k--', lw=1)
 
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5,
+                   label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original,
+                        color='r', alpha=0.2, label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5,
+                   label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled,
+                        color='b', alpha=0.2, label='Std Dev Infilled')
+
         # Annotate plot
-        plt.title('Average Polyphony of Original and Infilled MIDI Files')
+        plt.title('Polyphony of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('Polyphony Value')
-        plt.xticks(indices, [f"File {i}" for i in indices],
-                   rotation=45, ha='right', fontsize=8)
+        plt.xticks(indices, [f"File {i}" for i in indices], rotation=45, ha='right', fontsize=8)
         plt.legend()
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
-        # Save plot
         plt.savefig(output_folder / "polyphony_original_vs_infilled.png")
         plt.close()
 
@@ -551,30 +581,24 @@ class Polyphony(Metric):
         output_file = Path(output_folder) / "polyphony_results.txt"
 
         with output_file.open(mode='w') as file:
+            file.write(f"Average Original Polyphony: {self.analysis_results['avg_original']:.4f}\n")
+            file.write(f"Std Dev Original Polyphony: {self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Average Infilled Polyphony: {self.analysis_results['avg_infilled']:.4f}\n")
+            file.write(f"Std Dev Infilled Polyphony: {self.analysis_results['std_infilled']:.4f}\n\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}\n")
-
-            file.write("Filename\tPolyphony Original\tPolyphony Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['p_original']) or np.isnan(stats['p_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['p_original']:.4f}\t"
-                               f"{stats['p_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            file.write("Filename\tPolyphony Original\tPolyphony Infilled\n")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['p_original']:.4f}\t"
+                           f"{stats['p_infilled']:.4f}\n")
 
 
 class PR(Metric):
     """
-        PolyphonyRatio class
+    PolyphonyRatio class
 
-        Computes the ratio of the number of time steps where more than two pitches
-        are played to the total number of time steps.  Used in different papers,
-        See https://arxiv.org/pdf/2011.06801
+    Computes the ratio of the number of time steps where more than two pitches
+    are played to the total number of time steps. See https://arxiv.org/pdf/2011.06801
     """
 
     def __init__(self):
@@ -584,10 +608,11 @@ class PR(Metric):
         self.file_statistics = []
         self.pr_original = None
         self.pr_infilled = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
 
     def _get_pianoroll(self, notes: list[symusic.Note], infilling_start: int, length: int) -> np.ndarray:
@@ -595,9 +620,9 @@ class PR(Metric):
         pianoroll = np.zeros((length, 128), bool)
         for note in notes:
             if note.end > infilling_start + length:
-                pianoroll[note.time-infilling_start: length, note.pitch] = 1
+                pianoroll[note.time - infilling_start: length, note.pitch] = 1
             else:
-                pianoroll[note.time-infilling_start: note.end - infilling_start, note.pitch] = 1
+                pianoroll[note.time - infilling_start: note.end - infilling_start, note.pitch] = 1
         return pianoroll
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
@@ -606,37 +631,39 @@ class PR(Metric):
         infilling_end_ticks = window_bars_ticks[-generation_config.context_size - 1]
 
         track = score.tracks[generation_config.infilled_track_idx]
-        notes = np.array([note for note in track.notes
-                          if note.time >= infilling_start_ticks and note.time < infilling_end_ticks])
+        notes = [note for note in track.notes
+                 if infilling_start_ticks <= note.time < infilling_end_ticks]
         length = infilling_end_ticks - infilling_start_ticks
 
-        # x axis of piano roll are pitches, y axis time!!!
         pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
         denominator = np.count_nonzero(pianoroll.sum(1) > 0)
         if denominator < 1:
             pr = np.nan
-        pr = np.count_nonzero(pianoroll.sum(1) > 2) / len(pianoroll)
+        else:
+            pr = np.count_nonzero(pianoroll.sum(1) > 2) / len(pianoroll)
 
         if kwargs.get("is_original", False):
             self.pr_original = pr
             self.file_statistics.append({
                 'filename': generation_config.filename,
-                'pr_original': self.pr_infilled,
-                'pr_infilled': self.pr_original
+                'pr_original': self.pr_original,
+                'pr_infilled': self.pr_infilled
             })
         else:
             self.pr_infilled = pr
 
     @override
     def analysis(self):
-        """Compute average difference between original and infilled PR values."""
-        differences = []
-        for stats in self.file_statistics:
-            diff = abs(stats['pr_original'] - stats['pr_infilled'])
-            differences.append(diff)
+        """Compute statistics for original and infilled PR values."""
+        original_values = [stats['pr_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['pr_original'])]
+        infilled_values = [stats['pr_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['pr_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
@@ -653,13 +680,23 @@ class PR(Metric):
         """
         Plot PR values for original and infilled MIDI files.
         """
-        # Extract data
-        original_values = [stats['pr_original'] for stats in self.file_statistics]
-        infilled_values = [stats['pr_infilled'] for stats in self.file_statistics]
-        filenames = [stats['filename'] for stats in self.file_statistics]
+        # Extract data, filtering out NaN values
+        valid_stats = [(stats['pr_original'], stats['pr_infilled'], stats['filename'])
+                       for stats in self.file_statistics
+                       if not (np.isnan(stats['pr_original']) or np.isnan(stats['pr_infilled']))]
 
-        # Use indices as x-axis labels
+        if not valid_stats:
+            print("No valid data points to plot")
+            return
+
+        original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
+
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
 
         # Create plot
         plt.figure(figsize=(10, 6))
@@ -670,19 +707,21 @@ class PR(Metric):
         # Plot infilled PR values
         plt.plot(indices, infilled_values, 'bo', label='Infilled PR')
 
-        # Add connecting lines between original and infilled points
-        for i in range(len(indices)):
-            plt.plot([indices[i], indices[i]],
-                     [original_values[i], infilled_values[i]],
-                     'k--', lw=1)
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2)
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2)
 
         # Annotate plot
         plt.title('Polyphony Ratio (PR) of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('PR Value')
-        plt.xticks(indices, [f"File {i}" for i in indices],
-                   rotation=45, ha='right', fontsize=8)
-        plt.legend()
+        plt.xticks(indices, [f"File {i}" for i in indices], rotation=45, ha='right', fontsize=8)
+        plt.legend(title=None)  # Remove the title from the legend
+        plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
         # Save plot
@@ -696,18 +735,17 @@ class PR(Metric):
         output_file = Path(output_folder) / "pr_results.txt"
 
         with output_file.open(mode='w') as file:
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}\n")
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tPR Original\tPR Infilled\n")
 
-            file.write("Filename\tPR Original\tPR Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                difference = self.analysis_results['differences'][i]
+            for stats in self.file_statistics:
                 file.write(f"{stats['filename']}\t"
                            f"{stats['pr_original']:.4f}\t"
-                           f"{stats['pr_infilled']:.4f}\t"
-                           f"{difference:.4f}\n")
-
+                           f"{stats['pr_infilled']:.4f}\n")
 
 class PV(Metric):
     """
@@ -723,15 +761,16 @@ class PV(Metric):
     def __init__(self):
         super().__init__()
         # Store statistics for each MIDI file
-        self.compare_with_original = True
         self.file_statistics = []
         self.pv_original = None
         self.pv_infilled = None
-        # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
+        self.compare_with_original = True
 
     def compute_metric(self, generation_config: GenerationConfig, score: Score, *args, **kwargs):
         window_bars_ticks = kwargs.get('window_bars_ticks', None)
@@ -760,21 +799,20 @@ class PV(Metric):
         else:
             self.pv_infilled = pv
 
-    @override
     def analysis(self):
-        """Compute average difference between original and infilled PV values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['pv_original']) or np.isnan(stats['pv_infilled'])):
-                diff = abs(stats['pv_original'] - stats['pv_infilled'])
-                differences.append(diff)
+        """Compute statistics for original and infilled PV values."""
+        original_values = [stats['pv_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['pv_original'])]
+        infilled_values = [stats['pv_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['pv_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
-    @override
     def output_results(self, output_folder: Path | str):
         """Output results to files."""
         output_folder = Path(output_folder) / "PV"
@@ -799,6 +837,12 @@ class PV(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         # Create plot
         plt.figure(figsize=(10, 6))
 
@@ -808,19 +852,20 @@ class PV(Metric):
         # Plot infilled PV values
         plt.plot(indices, infilled_values, 'bo', label='Infilled PV')
 
-        # Add connecting lines between original and infilled points
-        for i in range(len(indices)):
-            plt.plot([indices[i], indices[i]],
-                     [original_values[i], infilled_values[i]],
-                     'k--', lw=1)
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2)
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2)
 
         # Annotate plot
         plt.title('Pitch Variations (PV) of Original and Infilled MIDI Files')
         plt.xlabel('MIDI File Index')
         plt.ylabel('PV Value (Unique Pitches / Total Notes)')
-        plt.xticks(indices, [f"File {i}" for i in indices],
-                   rotation=45, ha='right', fontsize=8)
-        plt.legend()
+        plt.xticks(indices, [f"File {i}" for i in indices], rotation=45, ha='right', fontsize=8)
+        plt.legend(title=None)  # Remove the title from the legend
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -835,21 +880,17 @@ class PV(Metric):
         output_file = Path(output_folder) / "pv_results.txt"
 
         with output_file.open(mode='w') as file:
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tPV Original\tPV Infilled\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}\n")
-
-            file.write("Filename\tPV Original\tPV Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['pv_original']) or np.isnan(stats['pv_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['pv_original']:.4f}\t"
-                               f"{stats['pv_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['pv_original']:.4f}\t"
+                           f"{stats['pv_infilled']:.4f}\n")
 
 class PitchClassHistogramEntropy(Metric):
     """
@@ -871,8 +912,10 @@ class PitchClassHistogramEntropy(Metric):
         self.pch_infilled = None
         # Add new structure to store analysis results
         self.analysis_results = {
-            'average_difference': None,
-            'differences': []
+            'average_original': None,
+            'std_original': None,
+            'average_infilled': None,
+            'std_infilled': None
         }
 
     def _entropy(self, prob):
@@ -915,15 +958,16 @@ class PitchClassHistogramEntropy(Metric):
             self.pch_infilled = pch
 
     def analysis(self):
-        """Analyze differences between original and infilled PCH values."""
-        differences = []
-        for stats in self.file_statistics:
-            if not (np.isnan(stats['pch_original']) or np.isnan(stats['pch_infilled'])):
-                diff = abs(stats['pch_original'] - stats['pch_infilled'])
-                differences.append(diff)
+        """Compute statistics of original and infilled PCH values."""
+        original_values = [stats['pch_original'] for stats in self.file_statistics
+                           if not np.isnan(stats['pch_original'])]
+        infilled_values = [stats['pch_infilled'] for stats in self.file_statistics
+                           if not np.isnan(stats['pch_infilled'])]
 
-        self.analysis_results['differences'] = differences
-        self.analysis_results['average_difference'] = np.mean(differences) if differences else 0
+        self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
+        self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
+        self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
+        self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
 
         return self.analysis_results
 
@@ -949,6 +993,12 @@ class PitchClassHistogramEntropy(Metric):
         original_values, infilled_values, filenames = zip(*valid_stats)
         indices = list(range(len(filenames)))
 
+        # Retrieve analysis results
+        avg_original = self.analysis_results['average_original']
+        std_original = self.analysis_results['std_original']
+        avg_infilled = self.analysis_results['average_infilled']
+        std_infilled = self.analysis_results['std_infilled']
+
         # Create plot
         plt.figure(figsize=(10, 6))
 
@@ -963,6 +1013,14 @@ class PitchClassHistogramEntropy(Metric):
             plt.plot([indices[i], indices[i]],
                      [original_values[i], infilled_values[i]],
                      'k--', lw=1)
+
+        # Plot mean and standard deviation for original values
+        plt.axhline(avg_original, color='r', linestyle='-', linewidth=1.5, label=f'Mean Original ({avg_original:.4f})')
+        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2, label='Std Dev Original')
+
+        # Plot mean and standard deviation for infilled values
+        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=1.5, label=f'Mean Infilled ({avg_infilled:.4f})')
+        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2, label='Std Dev Infilled')
 
         # Annotate plot
         plt.title('Pitch Class Histogram Entropy (PCH) of Original and Infilled MIDI Files')
@@ -983,18 +1041,15 @@ class PitchClassHistogramEntropy(Metric):
         output_file = Path(output_folder) / "pch_results.txt"
 
         with output_file.open(mode='w') as file:
-            file.write("Filename\tPCH Original\tPCH Infilled\tDifference\n")
-            for i, stats in enumerate(self.file_statistics):
-                if not (np.isnan(stats['pch_original']) or np.isnan(stats['pch_infilled'])):
-                    difference = self.analysis_results['differences'][i]
-                    file.write(f"{stats['filename']}\t"
-                               f"{stats['pch_original']:.4f}\t"
-                               f"{stats['pch_infilled']:.4f}\t"
-                               f"{difference:.4f}\n")
-                else:
-                    file.write(f"{stats['filename']}\tNaN\tNaN\tNaN\n")
+            # Write statistics
+            file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
+                       f"Std={self.analysis_results['std_original']:.4f}\n")
+            file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
+            file.write("Filename\tPCH Original\tPCH Infilled\n")
 
-            # Add average difference at the end
-            file.write(f"\nAverage Difference: "
-                       f"{self.analysis_results['average_difference']:.4f}")
+            for stats in self.file_statistics:
+                file.write(f"{stats['filename']}\t"
+                           f"{stats['pch_original']:.4f}\t"
+                           f"{stats['pch_infilled']:.4f}\n")
 
