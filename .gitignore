@@ -1,4 +1,7 @@
 .idea/
 /tests/midis
+/tests/FINALTEST
+tests/musiac_original_midis
+tests/original_midis
 /output/*
 !/output/placeholder

@@ -21,6 +21,7 @@ class MetricConfig:
     qr: bool = False
     groove_consistency: bool = False
     pitch_class_histogram_entropy: bool = False
+    f1onsets: bool = False
 
 
 

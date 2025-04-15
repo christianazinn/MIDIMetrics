@@ -46,7 +46,8 @@ def parse_filename(file_path: Path) -> GenerationConfig:
     filename = filename.rstrip('.midi')  # Removes a trailing .midi if it's there
 
     # Use regular expression to parse the filename
-    match = re.match(r'(.*?)track(\d+)_infill_bars(\d+)_([\d]+)_context_4_generationtime_[\d.]+', filename)
+    # match = re.match(r'(.*?)track(\d+)_infill_bars(\d+)_([\d]+)_context_4_generationtime_[\d.]+', filename)
+    match = re.match(r"^([^_]+)_track(\d+)_infill_bars(\d+)_(\d+)", filename)
 
     if not match:
         raise ValueError(f"Filename format is invalid: {filename}")
@@ -55,12 +56,11 @@ def parse_filename(file_path: Path) -> GenerationConfig:
     infilled_track_idx = int(match.group(2))  # Extract track ID
     bar_start = int(match.group(3))   # Extract starting bar
     bar_end = int(match.group(4))  # Extract ending bar
-
     # Build the GenerationConfig object
     generation_config = GenerationConfig(
         generation_type="infilling",  # The generation type is "infilling" by default
         infilled_bars=(bar_start, bar_end),
-        context_size=4,  # Assuming a fixed context size for now
+        context_size=0,  # Assuming a fixed context size for now
         infilled_track_idx=infilled_track_idx,
         filename = str(file_path.name)
     )
