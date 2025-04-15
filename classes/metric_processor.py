@@ -96,21 +96,24 @@ class MetricsProcessor:
 
             for metric in self.metrics:
 
-                metric.compute_metric(
-                    generation_config=_generation_config,
-                    score = infilled_score,
-                    window_bars_ticks = _window_bars_ticks_infilled,
-                    is_original = False)
-                if metric.compare_with_original:
-                    _window_bars_ticks_original = self._get_window_bars_ticks(
-                        _generation_config,
-                        original_score
-                    )
+                try:
                     metric.compute_metric(
-                        generation_config = _generation_config,
-                        score = original_score,
-                        window_bars_ticks = _window_bars_ticks_original,
-                        is_original = True)
+                        generation_config=_generation_config,
+                        score = infilled_score,
+                        window_bars_ticks = _window_bars_ticks_infilled,
+                        is_original = False)
+                    if metric.compare_with_original:
+                        _window_bars_ticks_original = self._get_window_bars_ticks(
+                            _generation_config,
+                            original_score
+                        )
+                        metric.compute_metric(
+                            generation_config = _generation_config,
+                            score = original_score,
+                            window_bars_ticks = _window_bars_ticks_original,
+                            is_original = True)
+                except:
+                    pass
 
         end_time = time.time()
 

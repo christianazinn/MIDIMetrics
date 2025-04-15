@@ -313,17 +313,20 @@ class UPC(Metric):
 
         pitches_counts = []
         for i in range(infilled_bars - 1):
-            note_idxs = np.where(
-                (times >= window_bars_ticks[i + context_size]) & (times < window_bars_ticks[i + context_size + 1]))[0]
-            infilling_pitches = pitches[note_idxs]
-            count = 0
-            is_used = [False] * 12
-            for pitch in infilling_pitches:
-                pitch_class = pitch % 12
-                if not is_used[pitch_class]:
-                    is_used[pitch_class] = True
-                    count += 1
-            pitches_counts.append(count)
+            try:
+                note_idxs = np.where(
+                    (times >= window_bars_ticks[i + context_size]) & (times < window_bars_ticks[i + context_size + 1]))[0]
+                infilling_pitches = pitches[note_idxs]
+                count = 0
+                is_used = [False] * 12
+                for pitch in infilling_pitches:
+                    pitch_class = pitch % 12
+                    if not is_used[pitch_class]:
+                        is_used[pitch_class] = True
+                        count += 1
+                pitches_counts.append(count)
+            except:
+                print("unhappy pitch")
 
         upc = np.mean(np.array(pitches_counts))
 
@@ -476,22 +479,25 @@ class Polyphony(Metric):
                  if infilling_start_ticks <= note.time < infilling_end_ticks]
         length = infilling_end_ticks - infilling_start_ticks
 
-        pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
-        denominator = np.count_nonzero(pianoroll.sum(1) > 0)
-        if denominator < 1:
-            p = np.nan
-        else:
-            p = pianoroll.sum() / denominator
+        try:
+            pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
+            denominator = np.count_nonzero(pianoroll.sum(1) > 0)
+            if denominator < 1:
+                p = np.nan
+            else:
+                p = pianoroll.sum() / denominator
 
-        if kwargs.get("is_original", False):
-            self.p_original = p
-            self.file_statistics.append({
-                'filename': generation_config.filename,
-                'p_original': self.p_original,
-                'p_infilled': self.p_infilled
-            })
-        else:
-            self.p_infilled = p
+            if kwargs.get("is_original", False):
+                self.p_original = p
+                self.file_statistics.append({
+                    'filename': generation_config.filename,
+                    'p_original': self.p_original,
+                    'p_infilled': self.p_infilled
+                })
+            else:
+                self.p_infilled = p
+        except:
+            print("pianoroll unhappy B")
 
     @override
     def analysis(self):
@@ -635,22 +641,25 @@ class PR(Metric):
                  if infilling_start_ticks <= note.time < infilling_end_ticks]
         length = infilling_end_ticks - infilling_start_ticks
 
-        pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
-        denominator = np.count_nonzero(pianoroll.sum(1) > 0)
-        if denominator < 1:
-            pr = np.nan
-        else:
-            pr = np.count_nonzero(pianoroll.sum(1) > 2) / len(pianoroll)
+        try:
+            pianoroll = self._get_pianoroll(notes, infilling_start_ticks, length)
+            denominator = np.count_nonzero(pianoroll.sum(1) > 0)
+            if denominator < 1:
+                pr = np.nan
+            else:
+                pr = np.count_nonzero(pianoroll.sum(1) > 2) / len(pianoroll)
 
-        if kwargs.get("is_original", False):
-            self.pr_original = pr
-            self.file_statistics.append({
-                'filename': generation_config.filename,
-                'pr_original': self.pr_original,
-                'pr_infilled': self.pr_infilled
-            })
-        else:
-            self.pr_infilled = pr
+            if kwargs.get("is_original", False):
+                self.pr_original = pr
+                self.file_statistics.append({
+                    'filename': generation_config.filename,
+                    'pr_original': self.pr_original,
+                    'pr_infilled': self.pr_infilled
+                })
+            else:
+                self.pr_infilled = pr
+        except:
+            print("pianorull unhappy")
 
     @override
     def analysis(self):

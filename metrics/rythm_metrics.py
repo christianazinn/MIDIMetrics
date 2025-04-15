@@ -835,7 +835,10 @@ class GrooveConsistency(Metric):
             bar_start = window_bars_ticks[i + context_size]
             bar_end = window_bars_ticks[i + context_size + 1]
             bar_times = times[(times >= bar_start) & (times < bar_end)] - bar_start
-            grooving_pattern_matrix[i, bar_times] = 1
+            try:
+                grooving_pattern_matrix[i, bar_times] = 1
+            except:
+                print("unhappy")
 
         # Compute pairwise grooving pattern similarities between adjacent bars
         hamming_distance = np.count_nonzero(
