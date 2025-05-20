@@ -3,5 +3,7 @@
 /tests/FINALTEST
 tests/musiac_original_midis
 tests/original_midis
+!/tests/FINALTEST/model_folder_placeholder
 /output/*
-!/output/placeholder
+!/output/Evaluations will appear here
+__pycache__/

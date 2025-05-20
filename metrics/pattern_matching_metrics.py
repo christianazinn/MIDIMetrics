@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Set, Tuple
 
+import re
 import numpy as np
 from matplotlib import pyplot as plt
 from symusic import Score
@@ -101,7 +102,7 @@ class ContentPreservationMetric(Metric):
         })
 
     @override
-    def analysis(self):
+    def analysis(self, comparison="compare"):
         """
         Analyze the content preservation scores across all files and compute statistics.
 
@@ -111,23 +112,104 @@ class ContentPreservationMetric(Metric):
         """
         scores = [stats["content_preservation_score"] for stats in self.file_statistics]
 
-        if not scores:
-            self.analysis_results = {
-                "average_score": None,
-                "min_score": None,
-                "max_score": None,
-                "scores": []
-            }
-            return
+        # Organize scores by model and prompt
+        base_scores = {}
+        comparison_scores = {}
+        
+        for stats in self.file_statistics:
+            filename = stats['filename']
+            f_score = stats['content_preservation_score']
+            
+            # Extract the prompt identifier using regex to handle varying generationtime values
+            # Format: 277_track0_infill_bars24_26_context_8_generationtime_0.971_comparison.mid
+            # We want to extract everything before "_generationtime_"
+            match = re.match(r'^(.+?)_generationtime_.+?(base|epoch\d+)\.mid$', filename)
+            
+            if match:
+                prompt_id = match.group(1)
+                model_type = match.group(2)
+                
+                if model_type == comparison:
+                    comparison_scores[prompt_id] = f_score
+                else:
+                    base_scores[prompt_id] = f_score
 
+        # Find common prompts for paired analysis
+        common_prompts = sorted(set(base_scores.keys()) & set(comparison_scores.keys()))
+
+        if not common_prompts:
+            self.analysis_results = {
+                "average_score": np.mean(scores),
+                "min_score": np.min(scores),
+                "max_score": np.max(scores),
+                'std_score': np.std(scores),
+                "scores": scores,
+                "paired_analysis": {
+                    "paired_test_performed": False,
+                    "reason": "No common prompts found between base and comparison models"
+                }
+            }
+            return self.analysis_results
+        
+        # Create paired arrays
+        base_paired = [base_scores[prompt] for prompt in common_prompts]
+        comparison_paired = [comparison_scores[prompt] for prompt in common_prompts]
+
+        print(f"number of pairs: {len(base_paired)}")
+        
+        # Calculate differences for Wilcoxon signed-rank test
+        differences = [comparison - base for base, comparison in zip(base_paired, comparison_paired)]
+        
+        # Perform statistical tests
+        from scipy import stats
+        
+        # Wilcoxon signed-rank test (non-parametric alternative to paired t-test)
+        try:
+            w_stat, w_p_value = stats.wilcoxon(differences)
+        except ValueError:  # Can happen with zero differences
+            w_stat, w_p_value = None, None
+        
+        # Calculate effect size (Cohen's d for paired samples)
+        mean_diff = np.mean(differences)
+        std_diff = np.std(differences, ddof=1)
+        cohens_d = mean_diff / std_diff if std_diff > 0 else 0
+        
+        # Overall model statistics
+        base_mean = np.mean(base_paired)
+        base_std = np.std(base_paired)
+        comparison_mean = np.mean(comparison_paired)
+        comparison_std = np.std(comparison_paired)
+        
+        # Prepare paired analysis results
+        paired_analysis = {
+            "paired_test_performed": True,
+            "n_pairs": len(common_prompts),
+            "common_prompts": common_prompts,
+            "base_mean": base_mean,
+            "base_std": base_std,
+            "comparison_mean": comparison_mean,
+            "comparison_std": comparison_std,
+            "mean_difference": mean_diff,
+            "std_difference": std_diff,
+            "wilcoxon_statistic": w_stat,
+            "wilcoxon_p_value": w_p_value,
+            "cohens_d": cohens_d,
+            "paired_data": {
+                prompt: {"base": base_scores[prompt], "comparison": comparison_scores[prompt]}
+                for prompt in common_prompts
+            },
+        }
+        
+        # Store overall statistics along with paired analysis
         self.analysis_results = {
             "average_score": np.mean(scores),
             "min_score": np.min(scores),
             "max_score": np.max(scores),
             'std_score': np.std(scores),
-            "scores": scores
+            "scores": scores,
+            "paired_analysis": paired_analysis
         }
-
+        
         return self.analysis_results
 
     def _pitches_to_chroma(self, frame_pitches, time_steps_per_bar):
@@ -171,17 +253,8 @@ class ContentPreservationMetric(Metric):
         output_folder = Path(output_folder) / "ContentPreservationMetric"
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        global_output_file = output_folder.parent / "summary.txt"
-
-        mean = self.analysis_results["average_score"]
-        std_dev = self.analysis_results["std_score"]
-
-
-        with global_output_file.open(mode='a', encoding='utf-8') as f:
-            f.write(f"CP: mean: {mean:.5f} std_dev: {std_dev:.5f}\n")
-
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
 
     def output_to_txt(self, output_folder: Path | str):
         """
@@ -191,7 +264,9 @@ class ContentPreservationMetric(Metric):
         average_score = self.analysis_results["average_score"]
         min_score = self.analysis_results["min_score"]
         max_score = self.analysis_results["max_score"]
-
+        
+        paired_analysis = self.analysis_results.get("paired_analysis", {})
+        paired_test_performed = paired_analysis.get("paired_test_performed", False)
 
         with open(output_folder / "content_preservation.txt", 'w') as file:
             file.write("Summary Statistics:\n")
@@ -199,20 +274,69 @@ class ContentPreservationMetric(Metric):
             file.write(f"Minimum Score: {min_score:.2f}\n" if min_score is not None else "Minimum Score: N/A\n")
             file.write(f"Maximum Score: {max_score:.2f}\n" if max_score is not None else "Maximum Score: N/A\n")
             file.write("\n")
+            
+            # Add paired analysis results if performed
+            if paired_test_performed:
+                file.write("Paired Statistical Analysis (Base vs comparison):\n")
+                file.write(f"Number of paired samples: {paired_analysis['n_pairs']}\n")
+                file.write(f"Base model mean: {paired_analysis['base_mean']:.4f} (std: {paired_analysis['base_std']:.4f})\n")
+                file.write(f"comparison model mean: {paired_analysis['comparison_mean']:.4f} (std: {paired_analysis['comparison_std']:.4f})\n")
+                file.write(f"Mean difference (comparison - Base): {paired_analysis['mean_difference']:.4f} (std: {paired_analysis['std_difference']:.4f})\n")
+                file.write("\n")
+                
+                # Only include Wilcoxon test results if available
+                if paired_analysis.get('wilcoxon_p_value') is not None:
+                    file.write("Wilcoxon signed-rank test (non-parametric):\n")
+                    file.write(f"W-statistic: {paired_analysis['wilcoxon_statistic']}\n")
+                    file.write(f"p-value: {paired_analysis['wilcoxon_p_value']:.6f}\n")
+                    file.write("\n")
+                
+                file.write(f"Effect size (Cohen's d): {paired_analysis['cohens_d']:.4f}\n")
+            else:
+                if "reason" in paired_analysis:
+                    file.write(f"Paired statistical analysis not performed: {paired_analysis['reason']}\n\n")
+                else:
+                    file.write("Paired statistical analysis not performed\n\n")
 
-            file.write(
-                "Filename | content_preservation_score | similarities \n")
+            file.write("Individual File Statistics:\n")
+            file.write("Filename | content_preservation_score | similarities\n")
+            file.write("-" * 80 + "\n")
 
             for stats in self.file_statistics:
                 filename = stats['filename']
                 content_preservation_score = stats['content_preservation_score']
+                # Only print first 3 and last 3 similarities to keep the output reasonable
                 similarities = stats['similarities']
+                if len(similarities) > 6:
+                    similarities_str = f"{similarities[:3]}...{similarities[-3:]}"
+                else:
+                    similarities_str = str(similarities)
 
-                line = f"{filename} | " \
-                       f"{content_preservation_score:.2f} | " \
-                       f"{similarities}\n"
-
+                line = f"{filename} | {content_preservation_score:.4f} | {similarities_str}\n"
                 file.write(line)
+            
+            # Add paired comparison table if performed
+            if paired_test_performed:
+                file.write("\n\nPaired Comparison Table:\n")
+                file.write("Prompt | Base Score | comparison Score | Difference (comparison - Base)\n")
+                file.write("-" * 80 + "\n")
+                
+                paired_data = paired_analysis["paired_data"]
+                for prompt in paired_analysis["common_prompts"]:
+                    base_score = paired_data[prompt]["base"]
+                    comparison_score = paired_data[prompt]["comparison"]
+                    difference = comparison_score - base_score
+                    file.write(f"{prompt} | {base_score:.4f} | {comparison_score:.4f} | {difference:.4f}\n")
+        
+        # Write summary to global output file
+        with open(output_folder.parent / "summary.txt", mode='a', encoding='utf-8') as f:
+            f.write(f"CP: mean: {average_score:.5f} std_dev: {self.analysis_results['std_score']:.5f}\n")
+
+            if paired_test_performed:
+                f.write(f"CP Paired Analysis: base_mean: {paired_analysis['base_mean']:.5f} comparison_mean: {paired_analysis['comparison_mean']:.5f}\n")
+                f.write(f"CP Effect Size: Cohen's d: {paired_analysis['cohens_d']:.5f} ({effect_size_interp})\n")
+            if paired_analysis.get("wilcoxon_p_value", False):
+                f.write(f"CP Wilcoxon P: {paired_analysis['wilcoxon_p_value']}\n")
 
     def plot(self, output_folder: Path | str):
         """
@@ -317,67 +441,168 @@ class F1Onsets(Metric):
         })
 
     @override
-    def analysis(self):
+    def analysis(self, comparison="compare"):
         """
         Computes the average, minimum, and maximum F1 scores across all processed files.
+        Performs paired statistical analysis between base and comparison models.
         """
         if not self.file_statistics:
-            return
-
-        # Extract all f_scores from file_statistics
-        f_scores = [stats['f_score'] for stats in self.file_statistics if 'f_score' in stats]
-
-        if f_scores:
-            self.analysis_results = {
-                'average_f_score': np.mean(f_scores),
-                'min_f_score': np.min(f_scores),
-                'max_f_score': np.max(f_scores),
-                'std_f_score': np.std(f_scores)
-            }
-        else:
             self.analysis_results = {
                 'average_f_score': None,
                 'min_f_score': None,
                 'max_f_score': None,
                 'std_f_score': None
             }
+            return self.analysis_results
+        
+        # Extract all f_scores from file_statistics
+        f_scores = [stats['f_score'] for stats in self.file_statistics if 'f_score' in stats]
+        
+        # Extract consistently the prompt identifier from filenames
+        base_scores = {}
+        comparison_scores = {}
+        
+        import re
+        
+        for stats in self.file_statistics:
+            filename = stats['filename']
+            f_score = stats['f_score']
+            
+            # Extract the prompt identifier using regex to handle varying generationtime values
+            # Format: 277_track0_infill_bars24_26_context_8_generationtime_0.971_comparison.mid
+            # We want to extract everything before "_generationtime_"
+            match = re.match(r'^(.+?)_generationtime_.+?(base|epoch\d+)\.mid$', filename)
+            
+            if match:
+                prompt_id = match.group(1)
+                model_type = match.group(2)
+                
+                if model_type == comparison:
+                    comparison_scores[prompt_id] = f_score
+                else:
+                    base_scores[prompt_id] = f_score
+        
+        # Find common prompts for paired analysis
+        common_prompts = sorted(set(base_scores.keys()) & set(comparison_scores.keys()))
+        
+        if not common_prompts:
+            self.analysis_results = {
+                'average_f_score': np.mean(f_scores) if f_scores else None,
+                'min_f_score': np.min(f_scores) if f_scores else None,
+                'max_f_score': np.max(f_scores) if f_scores else None,
+                'std_f_score': np.std(f_scores) if f_scores else None,
+            }
+            return self.analysis_results
+        
+        # Create paired arrays
+        base_paired = [base_scores[prompt] for prompt in common_prompts]
+        comparison_paired = [comparison_scores[prompt] for prompt in common_prompts]
+        
+        # Calculate differences for Wilcoxon signed-rank test
+        differences = [comparison - base for base, comparison in zip(base_paired, comparison_paired)]
+        
+        # Perform statistical tests
+        from scipy import stats
+        
+        try:
+            w_stat, w_p_value = stats.wilcoxon(differences)
+        except ValueError:  # Can happen with zero differences
+            w_stat, w_p_value = None, None
+        
+        # Calculate effect size (Cohen's d for paired samples)
+        mean_diff = np.mean(differences)
+        std_diff = np.std(differences, ddof=1)
+        cohens_d = mean_diff / std_diff if std_diff > 0 else 0
+        
+        # Overall model statistics
+        base_mean = np.mean(base_paired)
+        base_std = np.std(base_paired)
+        comparison_mean = np.mean(comparison_paired)
+        comparison_std = np.std(comparison_paired)
+        
+        # Prepare paired analysis results
+        paired_analysis = {
+            "paired_test_performed": True,
+            "n_pairs": len(common_prompts),
+            "common_prompts": common_prompts,
+            "base_mean": base_mean,
+            "base_std": base_std,
+            "comparison_mean": comparison_mean,
+            "comparison_std": comparison_std,
+            "mean_difference": mean_diff,
+            "std_difference": std_diff,
+            "wilcoxon_statistic": w_stat,
+            "wilcoxon_p_value": w_p_value,
+            "cohens_d": cohens_d,
+            "paired_data": {
+                prompt: {"base": base_scores[prompt], "comparison": comparison_scores[prompt]}
+                for prompt in common_prompts
+            },
+        }
+        
+        # Store overall statistics along with paired analysis
+        self.analysis_results = {
+            'average_f_score': np.mean(f_scores) if f_scores else None,
+            'min_f_score': np.min(f_scores) if f_scores else None,
+            'max_f_score': np.max(f_scores) if f_scores else None,
+            'std_f_score': np.std(f_scores) if f_scores else None,
+            "paired_analysis": paired_analysis
+        }
+        
+        return self.analysis_results
 
     @override
     def output_results(self, output_folder: Path | str):
         output_folder = Path(output_folder) / "F1Onsets"
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        global_output_file = output_folder.parent / "summary.txt"
-
-        mean_diff = self.analysis_results['average_f_score']
-        std_dev = self.analysis_results['std_f_score']
-
-        with global_output_file.open(mode='a', encoding='utf-8') as f:
-            f.write(f"F1: mean: {mean_diff:.4f}, std.dev: {std_dev:.4f}\n")
-
-        #self.output_to_txt(output_folder)
+        self.output_to_txt(output_folder)
 
     def output_to_txt(self, output_folder: Path | str):
         """
         Outputs the F1 score results to a text file including summary statistics and per-file metrics.
+        Includes paired statistical analysis between base and comparison models.
         """
-        average_f_score = self.analysis_results["average_f_score"]
-        min_f_score = self.analysis_results["min_f_score"]
-        max_f_score = self.analysis_results["max_f_score"]
-        std_f_score = self.analysis_results["std_f_score"]
+        average_f_score = self.analysis_results.get("average_f_score")
+        min_f_score = self.analysis_results.get("min_f_score")
+        max_f_score = self.analysis_results.get("max_f_score")
+        std_f_score = self.analysis_results.get("std_f_score")
+        
+        paired_analysis = self.analysis_results.get("paired_analysis", {})
+        paired_test_performed = paired_analysis.get("paired_test_performed", False)
 
         with open(output_folder / "f1_onsets.txt", 'w') as file:
             file.write("Summary Statistics:\n")
-            file.write(
-                f"Average F1 Score: {average_f_score:.4f}\n" if average_f_score is not None else "Average F1 Score: N/A\n")
-            file.write(
-                f"Minimum F1 Score: {min_f_score:.4f}\n" if min_f_score is not None else "Minimum F1 Score: N/A\n")
-            file.write(
-                f"Maximum F1 Score: {max_f_score:.4f}\n" if max_f_score is not None else "Maximum F1 Score: N/A\n")
-            file.write(
-                f"Standard Deviation: {std_f_score:.4f}\n" if std_f_score is not None else "Standard Deviation: N/A\n")
+            file.write(f"Average F1 Score: {average_f_score:.4f}\n" if average_f_score is not None else "Average F1 Score: N/A\n")
+            file.write(f"Minimum F1 Score: {min_f_score:.4f}\n" if min_f_score is not None else "Minimum F1 Score: N/A\n")
+            file.write(f"Maximum F1 Score: {max_f_score:.4f}\n" if max_f_score is not None else "Maximum F1 Score: N/A\n")
+            file.write(f"Standard Deviation: {std_f_score:.4f}\n" if std_f_score is not None else "Standard Deviation: N/A\n")
             file.write("\n")
+            
+            # Add paired analysis results if performed
+            if paired_test_performed:
+                file.write("Paired Statistical Analysis (Base vs comparison):\n")
+                file.write(f"Number of paired samples: {paired_analysis['n_pairs']}\n")
+                file.write(f"Base model mean: {paired_analysis['base_mean']:.4f} (std: {paired_analysis['base_std']:.4f})\n")
+                file.write(f"comparison model mean: {paired_analysis['comparison_mean']:.4f} (std: {paired_analysis['comparison_std']:.4f})\n")
+                file.write(f"Mean difference (comparison - Base): {paired_analysis['mean_difference']:.4f} (std: {paired_analysis['std_difference']:.4f})\n")
+                file.write("\n")
+                
+                # Only include Wilcoxon test results if available
+                if paired_analysis.get('wilcoxon_p_value') is not None:
+                    file.write("Wilcoxon signed-rank test (non-parametric):\n")
+                    file.write(f"W-statistic: {paired_analysis['wilcoxon_statistic']}\n")
+                    file.write(f"p-value: {paired_analysis['wilcoxon_p_value']:.6f}\n")
+                
+                file.write(f"Effect size (Cohen's d): {paired_analysis['cohens_d']:.4f}\n")
+                
+            else:
+                if "reason" in paired_analysis:
+                    file.write(f"Paired statistical analysis not performed: {paired_analysis['reason']}\n\n")
+                else:
+                    file.write("Paired statistical analysis not performed\n\n")
 
+            file.write("Individual File Statistics:\n")
             file.write("Filename | F1 Score\n")
             file.write("-" * 50 + "\n")
 
@@ -387,4 +612,31 @@ class F1Onsets(Metric):
 
                 line = f"{filename} | {f_score:.4f}\n"
                 file.write(line)
+            
+            # Add paired comparison table if performed
+            if paired_test_performed:
+                file.write("\n\nPaired Comparison Table:\n")
+                file.write("Prompt | Base Score | comparison Score | Difference (comparison - Base)\n")
+                file.write("-" * 80 + "\n")
+                
+                paired_data = paired_analysis["paired_data"]
+                for prompt in paired_analysis["common_prompts"]:
+                    base_score = paired_data[prompt]["base"]
+                    comparison_score = paired_data[prompt]["comparison"]
+                    difference = comparison_score - base_score
+                    # Truncate the prompt ID to avoid long lines
+                    display_prompt = prompt
+                    if len(display_prompt) > 35:
+                        display_prompt = display_prompt[:32] + "..."
+                    file.write(f"{display_prompt} | {base_score:.4f} | {comparison_score:.4f} | {difference:.4f}\n")
+        
+        # Write summary to global output file
+        with open(output_folder.parent / "summary.txt", mode='a', encoding='utf-8') as f:
+            f.write(f"F1: mean: {average_f_score:.4f}, std.dev: {std_f_score:.4f}\n")
+
+            if paired_test_performed:
+                f.write(f"F1 Paired Analysis: base_mean: {paired_analysis['base_mean']:.4f} comparison_mean: {paired_analysis['comparison_mean']:.4f}\n")
+                f.write(f"F1 Effect Size: Cohen's d: {paired_analysis['cohens_d']:.4f} ({effect_size_interp})\n")
+            if paired_analysis.get("wilcoxon_p_value", False):
+                f.write(f"F1 Wilcoxon P: {paired_analysis['wilcoxon_p_value']}\n")
 

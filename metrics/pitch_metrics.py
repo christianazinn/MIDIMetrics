@@ -97,8 +97,8 @@ class UPC(Metric):
         with global_output_file.open(mode='a', encoding='utf-8') as f:
             f.write(f"UPC: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
 
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
 
     def plot(self, output_folder: Path | str):
         """
@@ -276,8 +276,8 @@ class Polyphony(Metric):
             f.write(f"Polyphony: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
 
 
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
 
     def plot(self, output_folder: Path | str):
         """
@@ -449,8 +449,8 @@ class PR(Metric):
         with global_output_file.open(mode='a', encoding='utf-8') as f:
             f.write(f"PR: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
 
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
 
     def plot(self, output_folder: Path | str):
         """
@@ -612,8 +612,8 @@ class PV(Metric):
         with global_output_file.open(mode='a', encoding='utf-8') as f:
             f.write(f"PV: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
 
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
+        self.plot(output_folder)
+        self.output_to_txt(output_folder)
 
     def plot(self, output_folder: Path | str):
         """
@@ -759,25 +759,135 @@ class PitchClassHistogramEntropy(Metric):
             })
         else:
             self.pch_infilled = pch
-
-    def analysis(self):
-        """Compute statistics of original and infilled PCH values."""
+            
+    def analysis(self, comparison="compare"):
+        """
+        Compute statistics of PCH values - lower entropy is better (more tonal focus).
+        Calculate differences from ground truth for proper comparison.
+        """
+        # Basic statistics 
         original_values = [stats['pch_original'] for stats in self.file_statistics
                            if not np.isnan(stats['pch_original'])]
         infilled_values = [stats['pch_infilled'] for stats in self.file_statistics
                            if not np.isnan(stats['pch_infilled'])]
+                           
+        # Calculate differences from ground truth (lower is better)
+        pch_differences = []
+        for stats in self.file_statistics:
+            if not (np.isnan(stats['pch_original']) or np.isnan(stats['pch_infilled'])):
+                # Absolute difference from ground truth
+                pch_differences.append(abs(stats['pch_infilled'] - stats['pch_original']))
 
         self.analysis_results['average_original'] = np.mean(original_values) if original_values else 0
         self.analysis_results['std_original'] = np.std(original_values) if original_values else 0
         self.analysis_results['average_infilled'] = np.mean(infilled_values) if infilled_values else 0
         self.analysis_results['std_infilled'] = np.std(infilled_values) if infilled_values else 0
+        self.analysis_results['average_difference'] = np.mean(pch_differences) if pch_differences else 0
+        self.analysis_results['std_difference'] = np.std(pch_differences) if pch_differences else 0
+        
+        # Organize scores by model and prompt for paired analysis
+        base_scores = {}
+        comparison_scores = {}
+        base_differences = {}
+        comparison_differences = {}
+        
+        import re
+        
+        for stats in self.file_statistics:
+            filename = stats['filename']
+            
+            # Skip if PCH values are NaN
+            if np.isnan(stats['pch_original']) or np.isnan(stats['pch_infilled']):
+                continue
+                
+            # Extract the prompt identifier using regex
+            match = re.match(r'^(.+?)_generationtime_.+?(base|epoch\d+)\.mid$', filename)
+            
+            if match:
+                prompt_id = match.group(1)
+                model_type = match.group(2)
+                
+                # Calculate difference from ground truth (lower is better)
+                diff_from_truth = abs(stats['pch_infilled'] - stats['pch_original'])
+                
+                if model_type == comparison:
+                    comparison_scores[prompt_id] = stats['pch_infilled']
+                    comparison_differences[prompt_id] = diff_from_truth
+                else:
+                    base_scores[prompt_id] = stats['pch_infilled']
+                    base_differences[prompt_id] = diff_from_truth
+        
+        # Find common prompts for paired analysis
+        common_prompts = sorted(set(base_scores.keys()) & set(comparison_scores.keys()))
+        
+        if not common_prompts:
+            self.analysis_results['paired_analysis'] = {
+                "paired_test_performed": False,
+                "reason": "No common prompts found between base and epoch models"
+            }
+            return self.analysis_results
 
+        # Create paired arrays for differences from ground truth (lower is better)
+        base_diff_paired = [base_differences[prompt] for prompt in common_prompts]
+        comparison_diff_paired = [comparison_differences[prompt] for prompt in common_prompts]
+        
+        # Calculate improvement: negative values mean comparison is better (closer to ground truth)
+        improvement = [comparison_diff - base_diff for base_diff, comparison_diff in zip(base_diff_paired, comparison_diff_paired)]
+        
+        # Perform statistical tests on differences from ground truth
+        from scipy import stats
+        
+        # Wilcoxon signed-rank test
+        try:
+            w_stat, w_p_value = stats.wilcoxon(improvement)
+        except ValueError:
+            w_stat, w_p_value = None, None
+        
+        # Calculate effect size (Cohen's d for paired samples)
+        mean_diff = np.mean(improvement)
+        std_diff = np.std(improvement, ddof=1)
+        cohens_d = mean_diff / std_diff if std_diff > 0 else 0
+        
+        # Overall model statistics
+        base_mean = np.mean(base_diff_paired)
+        base_std = np.std(base_diff_paired)
+        comparison_mean = np.mean(comparison_diff_paired)
+        comparison_std = np.std(comparison_diff_paired)
+        
+        # Prepare paired analysis results
+        paired_analysis = {
+            "paired_test_performed": True,
+            "n_pairs": len(common_prompts),
+            "common_prompts": common_prompts,
+            "base_mean_diff": base_mean,  # Mean difference from ground truth for base model
+            "base_std_diff": base_std,
+            "comparison_mean_diff": comparison_mean,  # Mean difference from ground truth for comparison model
+            "comparison_std_diff": comparison_std,
+            "improvement_mean": -mean_diff,  # Negative mean_diff means comparison is better
+            "improvement_std": std_diff,
+            "wilcoxon_statistic": w_stat,
+            "wilcoxon_p_value": w_p_value,
+            "cohens_d": -cohens_d,  # Flipped sign since lower is better
+            "paired_data": {
+                prompt: {
+                    "base": base_scores[prompt], 
+                    "comparison": comparison_scores[prompt],
+                    "base_diff": base_differences[prompt],
+                    "comparison_diff": comparison_differences[prompt],
+                    "improvement": base_differences[prompt] - comparison_differences[prompt]
+                }
+                for prompt in common_prompts
+            },
+        }
+        
+        # Add paired analysis to results
+        self.analysis_results['paired_analysis'] = paired_analysis
+        
         return self.analysis_results
-
-    def output_results(self, output_folder: Path | str):
-        """Output results to files."""
-        output_folder = Path(output_folder) / "PitchClassHistogramEntropy"
-        output_folder.mkdir(parents=True, exist_ok=True)
+    
+    def output_to_txt(self, output_folder: Path | str):
+        """Write the PCH entropy values for each file to a text file."""
+        output_file = Path(output_folder) / "pch_results.txt"
 
         global_output_file = output_folder.parent / "summary.txt"
 
@@ -786,83 +896,102 @@ class PitchClassHistogramEntropy(Metric):
                    (self.analysis_results['std_infilled'] ** 2) / len(self.file_statistics)) ** 0.5
 
         with global_output_file.open(mode='a', encoding='utf-8') as f:
-            f.write(f"PCH: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
-
-        #self.plot(output_folder)
-        #self.output_to_txt(output_folder)
-
-    def plot(self, output_folder: Path | str):
-        """Plot PCH entropy for original and infilled MIDI files."""
-        # Extract data, filtering out NaN values
-        valid_stats = [(stats['pch_original'], stats['pch_infilled'], stats['filename'])
-                       for stats in self.file_statistics
-                       if not (np.isnan(stats['pch_original']) or np.isnan(stats['pch_infilled']))]
-
-        if not valid_stats:
-            print("No valid data points to plot")
-            return
-
-        original_values, infilled_values, filenames = zip(*valid_stats)
-        indices = list(range(len(filenames)))
-
-        # Retrieve analysis results
-        avg_original = self.analysis_results['average_original']
-        std_original = self.analysis_results['std_original']
-        avg_infilled = self.analysis_results['average_infilled']
-        std_infilled = self.analysis_results['std_infilled']
-
-        # Create plot
-        plt.figure(figsize=(10, 6))
-
-        # Plot original PCH entropy values
-        plt.plot(indices, original_values, 'ro', label='Original PCH Entropy', markersize = POINT_DIM)
-
-        # Plot infilled PCH entropy values
-        plt.plot(indices, infilled_values, 'bo', label='Infilled PCH Entropy', markersize = POINT_DIM)
-
-        # Add connecting lines between original and infilled points
-        for i in range(len(indices)):
-            plt.plot([indices[i], indices[i]],
-                     [original_values[i], infilled_values[i]],
-                     'k--', lw=0.2)
-
-        # Plot mean and standard deviation for original values
-        plt.axhline(avg_original, color='r', linestyle='-', linewidth=MEAN_LINES_WIDTH, label=f'Mean Original ({avg_original:.4f})')
-        plt.fill_between(indices, avg_original - std_original, avg_original + std_original, color='r', alpha=0.2, label='Std Dev Original')
-
-        # Plot mean and standard deviation for infilled values
-        plt.axhline(avg_infilled, color='b', linestyle='-', linewidth=MEAN_LINES_WIDTH, label=f'Mean Infilled ({avg_infilled:.4f})')
-        plt.fill_between(indices, avg_infilled - std_infilled, avg_infilled + std_infilled, color='b', alpha=0.2, label='Std Dev Infilled')
-
-        # Annotate plot
-        plt.title('Pitch Class Histogram Entropy (PCH) of Original and Infilled MIDI Files')
-        plt.xlabel('MIDI File Index')
-        plt.ylabel('PCH Entropy Value')
-        selected_indices = indices[::STEP]  # Select every 100th index
-        selected_labels = [f"File number {i}" for i in selected_indices]  # Create labels
-        plt.xticks(selected_indices, selected_labels, rotation=45, ha='right', fontsize=8)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-
-        # Save plot
-        plt.savefig(output_folder / "pch_original_vs_infilled.png")
-        plt.close()
-
-    def output_to_txt(self, output_folder: Path | str):
-        """Write the PCH entropy values for each file to a text file."""
-        output_file = Path(output_folder) / "pch_results.txt"
+            f.write(f"PCH original: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
 
         with output_file.open(mode='w') as file:
             # Write statistics
             file.write(f"Original: Average={self.analysis_results['average_original']:.4f}, "
                        f"Std={self.analysis_results['std_original']:.4f}\n")
             file.write(f"Infilled: Average={self.analysis_results['average_infilled']:.4f}, "
-                       f"Std={self.analysis_results['std_infilled']:.4f}\n\n")
-            file.write("Filename\tPCH Original\tPCH Infilled\n")
+                       f"Std={self.analysis_results['std_infilled']:.4f}\n")
+            
+            # Add average difference from ground truth if available
+            if 'average_difference' in self.analysis_results:
+                file.write(f"Average difference from ground truth: {self.analysis_results['average_difference']:.4f}\n")
+                file.write(f"Std difference from ground truth: {self.analysis_results['std_difference']:.4f}\n")
+            
+            file.write("\n")
+            
+            # Add paired analysis results if performed
+            paired_analysis = self.analysis_results.get('paired_analysis', {})
+            paired_test_performed = paired_analysis.get('paired_test_performed', False)
+            
+            if paired_test_performed:
+                file.write("\nPaired Statistical Analysis (comparing differences from ground truth):\n")
+                file.write(f"Number of paired samples: {paired_analysis['n_pairs']}\n")
+                file.write(f"Base model avg diff from truth: {paired_analysis['base_mean_diff']:.4f} (std: {paired_analysis['base_std_diff']:.4f})\n")
+                file.write(f"comparison model avg diff from truth: {paired_analysis['comparison_mean_diff']:.4f} (std: {paired_analysis['comparison_std_diff']:.4f})\n")
+                improvement = paired_analysis['improvement_mean']
+                file.write(f"Mean improvement (+ means comparison is better): {improvement:.4f} (std: {paired_analysis['improvement_std']:.4f})\n")
+                file.write("\n")
+                
+                # Only include Wilcoxon test results if available
+                if paired_analysis.get('wilcoxon_p_value') is not None:
+                    file.write("Wilcoxon signed-rank test (non-parametric):\n")
+                    file.write(f"W-statistic: {paired_analysis['wilcoxon_statistic']}\n")
+                    file.write(f"p-value: {paired_analysis['wilcoxon_p_value']:.6f}\n")
+                
+                file.write(f"Effect size (Cohen's d): {paired_analysis['cohens_d']:.4f}\n")
+                
+            # Write individual file results
+            file.write("Individual File Results:\n")
+            file.write("Filename\tPCH Original\tPCH Infilled\tDifference\n")
 
             for stats in self.file_statistics:
+                pch_original = stats['pch_original']
+                pch_infilled = stats['pch_infilled']
+                difference = abs(pch_infilled - pch_original) if not (np.isnan(pch_original) or np.isnan(pch_infilled)) else np.nan
                 file.write(f"{stats['filename']}\t"
-                           f"{stats['pch_original']:.4f}\t"
-                           f"{stats['pch_infilled']:.4f}\n")
+                           f"{pch_original:.4f}\t"
+                           f"{pch_infilled:.4f}\t"
+                           f"{difference:.4f}\n")
+            
+            # Add paired comparison table if performed
+            if paired_test_performed:
+                file.write("\n\nPaired Comparison Table (Differences from Ground Truth):\n")
+                file.write("Prompt | Base Diff | comparison Diff | Improvement (+ means comparison is better)\n")
+                file.write("-" * 80 + "\n")
+                
+                paired_data = paired_analysis["paired_data"]
+                for prompt in paired_analysis["common_prompts"]:
+                    base_diff = paired_data[prompt]["base_diff"]
+                    comparison_diff = paired_data[prompt]["comparison_diff"]
+                    improvement = paired_data[prompt]["improvement"]  # base_diff - comparison_diff
+                    
+                    # Truncate the prompt ID to avoid long lines
+                    display_prompt = prompt
+                    if len(display_prompt) > 35:
+                        display_prompt = display_prompt[:32] + "..."
+                        
+                    file.write(f"{display_prompt} | {base_diff:.4f} | {comparison_diff:.4f} | {improvement:.4f}\n")
+    
+    def output_results(self, output_folder: Path | str):
+        """Output results to files."""
+        output_folder = Path(output_folder) / "PitchClassHistogramEntropy"
+        output_folder.mkdir(parents=True, exist_ok=True)
 
+        global_output_file = output_folder.parent / "summary.txt"
+
+        # Add paired analysis results if available
+        paired_analysis = self.analysis_results.get('paired_analysis', {})
+        paired_test_performed = paired_analysis.get('paired_test_performed', False)
+
+        with global_output_file.open(mode='a', encoding='utf-8') as f:
+            # Write ground truth difference information if available
+            if 'average_difference' in self.analysis_results:
+                f.write(f"PCH: mean diff from truth: {self.analysis_results['average_difference']:.5f}, std.dev: {self.analysis_results['std_difference']:.5f}\n")
+            else:
+                mean_diff = abs(self.analysis_results['average_original'] - self.analysis_results['average_infilled'])
+                std_dev = ((self.analysis_results['std_original'] ** 2) / len(self.file_statistics) +
+                          (self.analysis_results['std_infilled'] ** 2) / len(self.file_statistics)) ** 0.5
+                f.write(f"PCH: mean: {mean_diff:.5f}, std.dev: {std_dev:.5f}\n")
+            
+            if paired_test_performed:
+                improvement = paired_analysis['improvement_mean']
+                f.write(f"PCH Paired Analysis: base_diff: {paired_analysis['base_mean_diff']:.5f} comparison_diff: {paired_analysis['comparison_mean_diff']:.5f}\n")
+                f.write(f"PCH Improvement: {improvement:.5f} (+ means comparison is better)\n")
+            if paired_analysis.get("wilcoxon_p_value", False):
+                f.write(f"PCH Wilcoxon P: {paired_analysis['wilcoxon_p_value']}\n")
+
+        # self.plot(output_folder)
+        self.output_to_txt(output_folder)

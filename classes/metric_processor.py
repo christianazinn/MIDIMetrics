@@ -64,8 +64,7 @@ class MetricsProcessor:
 
             _generation_config = parse_filename(midi_file)
 
-            song_name = f"{str(midi_file.stem).split('_')[0]}.mid"
-
+            song_name = f"{str(midi_file.stem).split('_track')[0]}.mid"
 
             if musiac:
 
@@ -135,7 +134,7 @@ class MetricsProcessor:
         # print(f"Time in re: {total_time_re} seconds")
 
         for metric in self.metrics:
-            metric.analysis()
+            metric.analysis(comparison="lora32")
             metric.output_results(OUTPUT_DIR / self.output_dir)
 
     def _get_window_bars_ticks(self, generation_config: GenerationConfig, score: Score):
